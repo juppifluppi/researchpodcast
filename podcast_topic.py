@@ -14,8 +14,8 @@ from datetime import datetime, timedelta
 # =========================
 
 TOPICS = [
-    "mRNA lipid nanoparticle",
     "bioconjugation",
+    "mRNA lipid nanoparticle",
     "drug mucin bile interactions",
     "polyoxazoline"
 ]
@@ -23,10 +23,10 @@ TOPICS = [
 DAYS_BACK = 7
 MAX_PAPERS_PER_TOPIC = 12
 TOP_SELECTION_TOTAL = 10
-MAX_FEED_ITEMS = 20
+MAX_FEED_ITEMS = 10
 
 TARGET_DURATION_MINUTES = 30
-BASE_MINUTES_PER_PAPER = 5
+BASE_MINUTES_PER_PAPER = 3
 CITATION_WEIGHT_FACTOR = 0.04
 
 BASE_URL = "https://juppifluppi.github.io/researchpodcast"
@@ -171,9 +171,6 @@ def generate_script(selected_papers):
         "- Core innovation\n"
         "- Mechanism\n"
         "- Conceptual advance\n"
-        "- Why it matters\n"
-        "- Real-world implications\n"
-        "- High-level limitations\n\n"
         "Target length: approx " + str(desired_minutes) + " minutes.\n\n"
         "Depth weighting:\n" + citation_info + "\n\n"
         "Format strictly:\n\n"
