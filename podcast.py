@@ -235,7 +235,7 @@ def generate_audio(script):
 def update_rss(filename):
     feed_path = "feed.xml"
     episode_url = f"{BASE_URL}/episodes/{filename}"
-    cover_url = f"{BASE_URL}/cover.jpg"
+    cover_url = f"{BASE_URL}/cover.png"
     pub_date = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
 
     rss = ET.Element("rss", version="2.0")
