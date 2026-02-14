@@ -133,7 +133,7 @@ def fetch_papers():
 
     for author_id in AUTHOR_IDS:
         works = requests.get(
-            f"https://api.openalex.org/works?filter=author.id:{author_id}&per_page=30"
+            f"https://api.openalex.org/works?filter=author.id:{author_id}&sort=publication_date:desc&per_page=10"
         ).json()
 
         for work in works.get("results", []):
@@ -196,17 +196,12 @@ def generate_script(selected_papers):
         "Die Titel der Paper müssen im Original-Englisch genannt werden.\n\n"
         "Ziel ist, dass die Zuhörer den wissenschaftlichen Inhalt verstehen.\n\n"
         "Keine Dramatisierung.\n"
-        "Kein Humor.\n"
         "Keine Hashtags.\n"
         "Kein Markdown.\n\n"
         "Für jedes Paper besprecht:\n"
-        "- Forschungsproblem\n"
-        "- Innovation\n"
-        "- Mechanismus\n"
+        "- Fragestellung\n"
+        "- Methodik\n"
         "- Ergebnisse\n"
-        "- Implikationen\n"
-        "- Limitationen\n\n"
-        "Format strikt:\n\n"
         "MODERATOR:\nText\n\n"
         "AUTHOR:\nText\n"
     )
