@@ -100,7 +100,6 @@ def fetch_crossref():
         for item in data.get("message", {}).get("items", []):
             papers.append(extract_paper(item))
 
-    # Remove duplicates by DOI
     unique = {}
     for p in papers:
         if p["doi"]:
@@ -109,7 +108,7 @@ def fetch_crossref():
     return list(unique.values())
 
 # =========================
-# SCRIPT GENERATION
+# SCRIPT GENERATION (PERSONALITY + DYNAMICS)
 # =========================
 
 def generate_script(selected_papers):
@@ -118,8 +117,25 @@ def generate_script(selected_papers):
     base_duration = number_of_papers * BASE_MINUTES_PER_PAPER
     desired_minutes = max(TARGET_DURATION_MINUTES, base_duration)
 
-    approx_tokens = int(desired_minutes * 200)
-    max_tokens = min(10000, approx_tokens)
+    approx_tokens = int(desired_minutes * 180)
+    max_tokens = min(9000, approx_tokens)
+
+    moderator_styles = [
+        "analytical but slightly contrarian",
+        "skeptical and probing",
+        "cautiously optimistic yet demanding",
+        "methodical and intellectually strict"
+    ]
+
+    author_styles = [
+        "measured and reflective",
+        "technically confident but grounded",
+        "carefully enthusiastic",
+        "precise and calmly defensive when challenged"
+    ]
+
+    moderator_style = random.choice(moderator_styles)
+    author_style = random.choice(author_styles)
 
     citation_info = ""
     for p in selected_papers:
@@ -135,20 +151,29 @@ def generate_script(selected_papers):
         section += "\n### PAPER_START: " + p["title"] + "\n"
 
     prompt = (
-        "Create a long-form scientific podcast dialogue.\n\n"
+        "Create a highly dynamic scientific podcast dialogue.\n\n"
+        "PERSONALITY:\n"
+        "- Moderator is " + moderator_style + ".\n"
+        "- Author is " + author_style + ".\n\n"
         "STRICT RULES:\n"
         "- Discuss ONLY the listed papers.\n"
         "- NO cross-paper comparisons.\n"
         "- NO general field commentary.\n"
-        "- NO meta research discussion.\n"
-        "- NO final global summary.\n\n"
-        "For EACH paper include:\n"
-        "- Deep theory\n"
-        "- Detailed methodology\n"
-        "- Statistical reasoning\n"
-        "- Mechanistic insights\n"
-        "- Limitations\n"
-        "- Paper-specific implications\n\n"
+        "- NO statistical deep dives.\n"
+        "- Do not mention specific test names or p-values.\n\n"
+        "CONVERSATIONAL DYNAMICS:\n"
+        "- Moderator occasionally challenges assumptions.\n"
+        "- Include controlled disagreement moments.\n"
+        "- Allow subtle emotional nuance (skepticism, curiosity, surprise).\n"
+        "- Include occasional sophisticated analogies.\n"
+        "- Keep tone intelligent and realistic.\n\n"
+        "CONTENT FOCUS:\n"
+        "- Core innovation\n"
+        "- Mechanism\n"
+        "- Conceptual advance\n"
+        "- Why it matters\n"
+        "- Real-world implications\n"
+        "- High-level limitations\n\n"
         "Target length: approx " + str(desired_minutes) + " minutes.\n\n"
         "Depth weighting:\n" + citation_info + "\n\n"
         "Format strictly:\n\n"
@@ -160,10 +185,10 @@ def generate_script(selected_papers):
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Generate focused scientific dialogue without drifting."},
+            {"role": "system", "content": "Generate natural, nuanced, intellectually rigorous dialogue."},
             {"role": "user", "content": prompt + section}
         ],
-        temperature=0.7,
+        temperature=0.9,
         max_tokens=max_tokens
     )
 
@@ -199,7 +224,11 @@ def generate_episode_metadata(papers, episode_number):
     text = response.choices[0].message.content.strip()
     lines = text.split("\n", 1)
 
-    raw_title = lines[0].replace("*", "").strip()
+    raw_title = lines[0].strip()
+    raw_title = re.sub(r"^\s*\d+[\).\s-]*", "", raw_title)
+    raw_title = re.sub(r"(?i)^episode\s*title\s*:\s*", "", raw_title)
+    raw_title = raw_title.replace("*", "").strip()
+
     summary = lines[1] if len(lines) > 1 else ""
 
     show_notes = "<h3>Discussed Papers</h3><ul>"
