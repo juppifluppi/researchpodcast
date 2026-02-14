@@ -167,7 +167,7 @@ Diskutiere:
             {"role": "user", "content": prompt + section}
         ],
         temperature=0.4,
-        max_tokens=19000
+        max_tokens=9000
     )
 
     return response.choices[0].message.content
