@@ -17,7 +17,8 @@ TOPICS = [
     "bioconjugation",
     "mRNA lipid nanoparticle",
     "drug mucin bile interactions",
-    "polyoxazoline"
+    "polyoxazoline",
+    "computational pharmaceutics"
 ]
 
 DAYS_BACK = 7
