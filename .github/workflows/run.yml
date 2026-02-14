@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.10"
 
-      - run: pip install openai requests pydub
+      - run: pip install openai requests pydub numpy
 
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
