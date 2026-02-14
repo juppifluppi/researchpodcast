@@ -1,0 +1,37 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" version="2.0"><channel><title>Research Updates</title><link>https://juppifluppi.github.io/researchpodcast</link><description>AI-generated deep dive into recent scientific publications.</description><language>en-us</language><item><title>Podcast Episode Title:</title><description>Advancements in mRNA-Lipid Nanoparticle Technologies: From T-Cell Engineering to Pulmonary Protection
+
+**Episode Summary:**  
+In this episode, we delve into the cutting-edge world of mRNA-lipid nanoparticle formulations and their transformative potential in medical science. Discover how two-dimensional AEX and IP-RPLC techniques shed new light on mRNA integrity and encapsulation efficiency, crucial for developing next-generation vaccines and therapies. We also explore the innovative use of targeted lipid nanoparticles for in vivo T-cell engineering, offering promising strategies for pancreatic tumor treatment. Additionally, learn about the breakthrough lipid-based ionic liquids that enhance mRNA intracellular delivery, and how sphingomyelin-induced lipid rafts improve mRNA uptake in cells. Finally, we discuss the protective role of bee pollen solid lipid nanoparticles against pulmonary toxicity and examine the latest designs in CAR T cell therapies using lipid nanoparticles.
+
+**Show Notes:**
+
+1. **Two-dimensional AEX – IP-RPLC: New insights on mRNA integrity and encapsulation efficiency of mRNA-lipid nanoparticle formulations**  
+   (Analytica Chimica Acta)  
+   DOI: [10.1016/j.aca.2026.345215](https://doi.org/10.1016/j.aca.2026.345215)  
+   *Highlights the role of advanced chromatographic techniques in evaluating mRNA-lipid nanoparticle quality.*
+
+2. **Targeted Lipid Nanoparticle Delivery of FAP-CAR mRNA Enables Potent In Vivo T-Cell Engineering Against Pancreatic Tumors**  
+   (Cancer Immunology Research)  
+   DOI: [10.1158/2326-6066.cir-25-0663](https://doi.org/10.1158/2326-6066.cir-25-0663)  
+   *Demonstrates the potential for targeted lipid nanoparticles to enhance T-cell therapy efficacy in cancer treatment.*
+
+3. **Lipid-Based Ionic Liquids Enable Efficient mRNA Intracellular Delivery**  
+   (Chemistry Letters)  
+   DOI: [10.1093/chemle/upag025](https://doi.org/10.1093/chemle/upag025)  
+   *Explores the use of lipid-based ionic liquids to improve mRNA delivery into cells.*
+
+4. **A new type of lipid nanoparticles with sphingomyelin-induced active lipid raft structures for improved mRNA cellular uptake**  
+   (Journal of Controlled Release)  
+   DOI: [10.1016/j.jconrel.2026.114640](https://doi.org/10.1016/j.jconrel.2026.114640)  
+   *Presents a novel lipid nanoparticle design that enhances mRNA uptake through lipid raft formation.*
+
+5. **Protective effects of bee pollen and its solid lipid nanoparticle formulation against lead acetate-induced pulmonary toxicity in Wistar rats**  
+   (Proceedings of the Indian National Science Academy)  
+   DOI: [10.1007/s43538-026-00703-3](https://doi.org/10.1007/s43538-026-00703-3)  
+   *Investigates bee pollen nanoparticles as a protective agent against pulmonary toxicity.*
+
+6. **Toward In Vivo CAR T Cell Therapy: Perfecting CAR and Lipid Nanoparticle Design**  
+   (Nano Letters)  
+   DOI: [10.1021/acs.nanolett.5c05535](https://doi.org/10.1021/acs.nanolett.5c05535)  
+   *Focuses on optimizing CAR and lipid nanoparticle designs for enhanced CAR T cell therapy performance.*</description><pubDate>Sat, 14 Feb 2026 14:54:01 GMT</pubDate><guid>https://juppifluppi.github.io/researchpodcast/episodes/episode_20260214.mp3</guid><enclosure url="https://juppifluppi.github.io/researchpodcast/episodes/episode_20260214.mp3" type="audio/mpeg" /><itunes:duration>693</itunes:duration></item></channel></rss>
