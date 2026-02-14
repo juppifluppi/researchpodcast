@@ -4,6 +4,7 @@ import re
 import html
 import json
 import random
+import xml.etree.ElementTree as ET
 from openai import OpenAI
 from pydub import AudioSegment
 from pydub.effects import compress_dynamic_range, high_pass_filter, low_pass_filter
@@ -13,15 +14,27 @@ from datetime import datetime, timedelta
 # CONFIG
 # =========================
 
-TOPICS = ["mRNA lipid nanoparticle", "bioconjugation", "drug mucin bile interactions", "polyoxazoline"]
+TOPICS = [
+    "mRNA lipid nanoparticle",
+    "bioconjugation",
+    "drug mucin bile interactions",
+    "polyoxazoline"
+]
+
 TRACK_AUTHORS = []
 
 DAYS_BACK = 7
 MAX_PAPERS_PER_TOPIC = 12
 MAX_PAPERS_PER_AUTHOR = 6
 TOP_SELECTION_TOTAL = 6
+MAX_FEED_ITEMS = 20
 
+BASE_URL = "https://juppifluppi.github.io/researchpodcast"
 EPISODES_DIR = "episodes"
+
+PODCAST_TITLE = "Research Updates"
+PODCAST_DESCRIPTION = "AI-generated deep dive into recent scientific publications."
+PODCAST_LANGUAGE = "en-us"
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -48,7 +61,7 @@ def random_pause():
     return AudioSegment.silent(duration=random.randint(250, 500))
 
 def random_long_pause():
-    return AudioSegment.silent(duration=random.randint(1800, 2600))
+    return AudioSegment.silent(duration=random.randint(2000, 3000))
 
 def apply_eq_moderator(audio):
     audio = high_pass_filter(audio, 120)
@@ -64,12 +77,19 @@ def apply_eq_author(audio):
 # FETCH PAPERS
 # =========================
 
-def fetch_crossref():
+def extract_paper(item):
+    return {
+        "title": item.get("title", ["No title"])[0],
+        "summary": strip_html(item.get("abstract", "")),
+        "doi": item.get("DOI", ""),
+        "journal": item.get("container-title", ["Unknown Journal"])[0],
+        "citations": item.get("is-referenced-by-count", 0),
+    }
 
+def fetch_crossref():
     start_date = (datetime.utcnow() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
     papers = []
 
-    # --- Topic-based search ---
     for topic in TOPICS:
         url = (
             "https://api.crossref.org/works?"
@@ -84,39 +104,15 @@ def fetch_crossref():
         for item in data.get("message", {}).get("items", []):
             papers.append(extract_paper(item))
 
-    # --- Author-based search ---
-    for author in TRACK_AUTHORS:
-        url = (
-            "https://api.crossref.org/works?"
-            f"query.author={author}"
-            f"&filter=from-pub-date:{start_date}"
-            f"&rows={MAX_PAPERS_PER_AUTHOR}"
-        )
-
-        response = requests.get(url)
-        data = response.json()
-
-        for item in data.get("message", {}).get("items", []):
-            papers.append(extract_paper(item))
-
-    # remove duplicates by DOI
     unique = {}
     for p in papers:
         if p["doi"]:
             unique[p["doi"]] = p
+
     return list(unique.values())
 
-def extract_paper(item):
-    return {
-        "title": item.get("title", ["No title"])[0],
-        "summary": strip_html(item.get("abstract", "")),
-        "doi": item.get("DOI", ""),
-        "journal": item.get("container-title", ["Unknown Journal"])[0],
-        "citations": item.get("is-referenced-by-count", 0),
-    }
-
 # =========================
-# SCRIPT GENERATION
+# SCRIPT GENERATION (DOUBLE LENGTH)
 # =========================
 
 def generate_script(selected_papers):
@@ -126,44 +122,53 @@ def generate_script(selected_papers):
         section += f"\n### PAPER_START: {p['title']}\n"
 
     prompt = f"""
-Erstelle ein natürlich klingendes wissenschaftliches Podcastgespräch im Dialogformat.
+Create a long-form, in-depth scientific podcast conversation in dialogue format.
 
-Sprache: Deutsch.
-Moderator kritisch, analytisch.
-Autor reflektiert.
+Language: English.
+Moderator is analytical, occasionally skeptical.
+Author is reflective and technically detailed.
+
+The episode should be substantially long and detailed.
+Discuss:
+
+- Theoretical background
+- Experimental design in depth
+- Methodological robustness
+- Statistical considerations
+- Limitations
+- Comparison across papers
+- Field-wide implications
+- Future research directions
+- Translational potential
+
+Each paper discussion should be extensive.
 
 Format:
 
 MODERATOR:
 <Text>
 
-AUTOR:
+AUTHOR:
 <Text>
 
-Erlaubt:
-- kurze Unterbrechungen
-- Mikro-Hesitationen
-- kritische Rückfragen
-- am Ende jedes Papers kurze Zusammenfassung
-
-Jedes Paper beginnt exakt mit:
+Each paper must begin exactly with:
 ### PAPER_START: <Title>
 """
 
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Du erzeugst ein lebendiges wissenschaftliches Gespräch."},
+            {"role": "system", "content": "You generate a long-form, high-level scientific discussion."},
             {"role": "user", "content": prompt + section}
         ],
         temperature=0.8,
-        max_tokens=8000
+        max_tokens=14000  # doubled
     )
 
     return response.choices[0].message.content
 
 # =========================
-# AUDIO PROCESSING
+# AUDIO
 # =========================
 
 def process_block(speaker, text):
@@ -224,7 +229,7 @@ def generate_audio(script):
             segments.append(random_long_pause())
             continue
 
-        speaker_match = re.match(r"^(MODERATOR|Moderator|AUTOR|Autor)\s*[:\-]?$", line)
+        speaker_match = re.match(r"^(MODERATOR|Moderator|AUTHOR|Author)\s*[:\-]?$", line)
 
         if speaker_match:
             if buffer:
@@ -242,7 +247,7 @@ def generate_audio(script):
     spoken = sum(segments)
 
     if len(spoken) < 5000:
-        raise ValueError("No speech generated. Dialogue parsing failed.")
+        raise ValueError("No speech generated.")
 
     spoken = speed_adjust(normalize(spoken), speed=1.10)
 
@@ -257,13 +262,58 @@ def generate_audio(script):
     intro = AudioSegment.from_mp3("intro_music.mp3")
     intro = normalize(intro).fade_out(2000)
 
-    final_audio = intro + spoken
+    outro = AudioSegment.from_mp3("intro_music.mp3")
+    outro = normalize(outro).fade_in(2000)
+
+    final_audio = intro + spoken + outro
     final_audio = normalize(final_audio)
 
     final_audio.export(final_path, format="mp3")
 
     duration_seconds = int(len(final_audio) / 1000)
     return filename, duration_seconds
+
+# =========================
+# RSS
+# =========================
+
+def update_rss(filename, duration_seconds):
+
+    feed_path = "feed.xml"
+    episode_url = f"{BASE_URL}/episodes/{filename}"
+    pub_date = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
+
+    if not os.path.exists(feed_path):
+        rss = ET.Element("rss", version="2.0")
+        channel = ET.SubElement(rss, "channel")
+
+        ET.SubElement(channel, "title").text = PODCAST_TITLE
+        ET.SubElement(channel, "link").text = BASE_URL
+        ET.SubElement(channel, "description").text = PODCAST_DESCRIPTION
+        ET.SubElement(channel, "language").text = PODCAST_LANGUAGE
+    else:
+        tree = ET.parse(feed_path)
+        rss = tree.getroot()
+        channel = rss.find("channel")
+
+    item = ET.Element("item")
+    ET.SubElement(item, "title").text = filename.replace(".mp3", "")
+    ET.SubElement(item, "pubDate").text = pub_date
+    ET.SubElement(item, "guid").text = episode_url
+
+    enclosure = ET.SubElement(item, "enclosure")
+    enclosure.set("url", episode_url)
+    enclosure.set("type", "audio/mpeg")
+
+    ET.SubElement(item, "itunes:duration").text = str(duration_seconds)
+
+    channel.insert(0, item)
+
+    items = channel.findall("item")
+    for old in items[MAX_FEED_ITEMS:]:
+        channel.remove(old)
+
+    ET.ElementTree(rss).write(feed_path, encoding="utf-8", xml_declaration=True)
 
 # =========================
 # MAIN
@@ -273,6 +323,7 @@ def main():
     papers = fetch_crossref()
     script = generate_script(papers[:TOP_SELECTION_TOTAL])
     filename, duration = generate_audio(script)
+    update_rss(filename, duration)
     print("Episode generated:", filename, "Duration:", duration)
 
 if __name__ == "__main__":
