@@ -136,8 +136,7 @@ def fetch_crossref():
     domain_query = (
         "https://api.openalex.org/works?"
         f"filter=from_publication_date:{start_date},"
-        "concepts.display_name.search:drug|polymer|nanoparticle|biomaterial|lipid"
-        "&per_page=100"
+        "&per_page=200"
     )
 
     recent = requests.get(domain_query).json()
