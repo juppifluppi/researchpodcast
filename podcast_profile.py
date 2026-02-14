@@ -373,15 +373,19 @@ def generate_audio(script):
     buffer = ""
     chapter_titles = []
 
-    for line in script.split("\n"):
+    lines = script.split("\n")
+
+    for line in lines:
         stripped = line.strip()
 
+        # Detect chapter marker
         if stripped.startswith("=== PAPER:"):
             title = stripped.replace("=== PAPER:", "").replace("===", "").strip()
             chapter_titles.append(title)
             continue
 
-        if stripped.startswith("MODERATOR"):
+        # Case-insensitive speaker detection
+        if stripped.lower().startswith("moderator"):
             if buffer and speaker:
                 seg = process_block(speaker, buffer)
                 if seg:
@@ -390,7 +394,7 @@ def generate_audio(script):
             speaker = "moderator"
             continue
 
-        if stripped.startswith("AUTHOR"):
+        if stripped.lower().startswith("author"):
             if buffer and speaker:
                 seg = process_block(speaker, buffer)
                 if seg:
@@ -402,12 +406,16 @@ def generate_audio(script):
         if speaker:
             buffer += " " + stripped
 
+    # Flush remaining buffer
     if buffer and speaker:
         seg = process_block(speaker, buffer)
         if seg:
             segments.append(seg)
 
     if not segments:
+        print("WARNING: Script did not contain proper speaker markers.")
+        print("First 500 characters of script:")
+        print(script[:500])
         raise ValueError("No speech segments generated.")
 
     spoken = segments[0]
@@ -425,6 +433,7 @@ def generate_audio(script):
 
     duration_seconds = int(len(final) / 1000)
 
+    # Chapter generation
     chapters = []
     if chapter_titles:
         step = duration_seconds // len(chapter_titles)
@@ -439,6 +448,7 @@ def generate_audio(script):
         json.dump({"version": "1.2.0", "chapters": chapters}, f, indent=2)
 
     return filename, duration_seconds, chapter_file
+
 
 # =========================
 # RSS
