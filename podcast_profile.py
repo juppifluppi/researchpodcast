@@ -156,7 +156,7 @@ def fetch_recent_papers():
 
     query = (
         "https://api.openalex.org/works?"
-        f"filter=from_publication_date:{start_date}"
+        f"filter=publication_date:>{start_date}"
         "&per_page=300"
     )
 
