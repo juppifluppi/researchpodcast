@@ -151,6 +151,19 @@ def fetch_recent_papers():
 
     start_date = (datetime.utcnow() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
 
+    # -------- Build 2-hop reference expansion --------
+    two_hop_refs = set(author_refs)
+
+    # Expand references of references (limit to avoid explosion)
+    for ref_id in list(author_refs)[:200]:
+        try:
+            ref_data = requests.get(f"https://api.openalex.org/works/{ref_id}").json()
+            for second_ref in ref_data.get("referenced_works", []):
+                two_hop_refs.add(second_ref)
+        except:
+            continue
+
+    # -------- Fetch recent papers --------
     query = (
         "https://api.openalex.org/works?"
         f"filter=from_publication_date:{start_date}"
@@ -165,13 +178,16 @@ def fetch_recent_papers():
         if not work.get("abstract_inverted_index"):
             continue
 
-        if not field_allowed(work):
-            continue
-
         abstract = openalex_abstract_to_text(work["abstract_inverted_index"])
 
-        overlap = len(set(work.get("referenced_works", [])) & author_refs)
-        co_citation_score = overlap / 6.0
+        # -------- 1-hop overlap --------
+        overlap_1 = len(set(work.get("referenced_works", [])) & author_refs)
+
+        # -------- 2-hop overlap --------
+        overlap_2 = len(set(work.get("referenced_works", [])) & two_hop_refs)
+
+        # weighted graph score
+        graph_score = (0.7 * overlap_1) + (0.3 * overlap_2)
 
         citations = work.get("cited_by_count", 0)
         citation_multiplier = 1 + np.log1p(citations)
@@ -184,42 +200,67 @@ def fetch_recent_papers():
             journal_id = source.get("id")
             journal_name = source.get("display_name", "Unknown Journal")
 
-        journal_score = 1.3 if journal_id in author_journal_ids else 0.9
+        journal_score = 1.3 if journal_id in author_journal_ids else 1.0
 
         pub_date = work.get("publication_date")
         days_old = 0
         if pub_date:
-            days_old = (datetime.utcnow() - datetime.strptime(pub_date, "%Y-%m-%d")).days
+            try:
+                days_old = (datetime.utcnow() - datetime.strptime(pub_date, "%Y-%m-%d")).days
+            except:
+                days_old = 0
 
         recency_score = 1 / (1 + days_old)
 
         base_score = (
-            0.35 * overlap +
-            0.20 * co_citation_score +
-            0.20 * journal_score +
-            0.10 * recency_score
+            0.5 * graph_score +
+            0.2 * journal_score +
+            0.1 * recency_score
         ) * citation_multiplier
+
+        doi = work.get("doi", "")
+        if doi:
+            doi = doi.replace("https://doi.org/", "")
 
         candidates.append({
             "title": work["title"],
             "journal": journal_name,
-            "doi": work.get("doi", "").replace("https://doi.org/", ""),
+            "doi": doi,
             "abstract": abstract,
             "base_score": base_score
         })
 
-    # fallback if empty
     if not candidates:
         print("Fallback: using embedding-only ranking.")
-        return []
 
+        # embedding-only fallback (guaranteed non-zero)
+        fallback = []
+        for work in recent.get("results", []):
+            if not work.get("abstract_inverted_index"):
+                continue
+
+            abstract = openalex_abstract_to_text(work["abstract_inverted_index"])
+            emb = get_embedding(abstract[:4000])
+            sim = cosine_similarity(emb, centroid)
+
+            fallback.append({
+                "title": work["title"],
+                "journal": work.get("primary_location", {}).get("source", {}).get("display_name", "Unknown Journal"),
+                "doi": work.get("doi", "").replace("https://doi.org/", ""),
+                "abstract": abstract,
+                "base_score": sim
+            })
+
+        candidates = fallback
+
+    # -------- Preselect before embedding refinement --------
     candidates = sorted(candidates, key=lambda x: x["base_score"], reverse=True)[:80]
 
-    # embedding refinement
+    # -------- Embedding refinement --------
     for c in candidates:
         emb = get_embedding(c["abstract"][:4000])
         sim = cosine_similarity(emb, centroid)
-        c["final_score"] = c["base_score"] + 0.15 * sim
+        c["final_score"] = c["base_score"] + 0.2 * sim
 
     candidates = sorted(candidates, key=lambda x: x["final_score"], reverse=True)
 
