@@ -1,6 +1,8 @@
 import os
 import requests
 import numpy as np
+import json
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from openai import OpenAI
@@ -14,17 +16,12 @@ from pydub.effects import compress_dynamic_range, high_pass_filter, low_pass_fil
 AUTHOR_IDS = [
     "https://openalex.org/A5018917714",
     "https://openalex.org/A5001051737",
-    "https://openalex.org/A5000977163",
-    "https://openalex.org/A5025070309",
-    "https://openalex.org/A5071908671",
-    "https://openalex.org/A5021321425",
-    "https://openalex.org/A5029642668"
+    "https://openalex.org/A5000977163"
 ]
 
 DAYS_BACK = 7
 TARGET_DURATION_MINUTES = 30
 BASE_MINUTES_PER_PAPER = 3
-CITATION_WEIGHT_FACTOR = 0.04
 MAX_FEED_ITEMS = 10
 
 BASE_URL = "https://juppifluppi.github.io/researchpodcast"
@@ -33,8 +30,8 @@ FEED_PATH = "feed.xml"
 COVER_URL = BASE_URL + "/cover.png"
 
 PODCAST_TITLE = "Research Updates"
-PODCAST_DESCRIPTION = "KI-generierte Analyse aktueller wissenschaftlicher Publikationen."
-PODCAST_LANGUAGE = "de-de"
+PODCAST_DESCRIPTION = "AI-generated analysis of recent scientific publications."
+PODCAST_LANGUAGE = "en-us"
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -87,54 +84,10 @@ def openalex_abstract_to_text(inv_index):
     return " ".join([w for _, w in words])
 
 # =========================
-# AUTHOR CONCEPT EXTRACTION
+# AUTHOR PROFILING
 # =========================
 
-def extract_author_concepts():
-    concept_counter = {}
-
-    for author_id in AUTHOR_IDS:
-        works = requests.get(
-            f"https://api.openalex.org/works?filter=author.id:{author_id}&sort=publication_date:desc&per_page=10"
-        ).json()
-
-        for work in works.get("results", []):
-            for concept in work.get("concepts", []):
-                if concept.get("level", 0) < 2:
-                    continue
-                cid = concept["id"]
-                score = concept.get("score", 0)
-                concept_counter[cid] = concept_counter.get(cid, 0) + score
-
-    if not concept_counter:
-        return []
-
-    sorted_concepts = sorted(concept_counter.items(), key=lambda x: x[1], reverse=True)
-    return [cid for cid, _ in sorted_concepts[:3]]
-
-# =========================
-# FETCH & RANK PAPERS
-# =========================
-
-def fetch_papers():
-
-    start_date = (datetime.utcnow() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
-    concept_ids = extract_author_concepts()
-
-    if not concept_ids:
-        print("Keine dominanten Konzepte gefunden.")
-        return []
-
-    concept_filter = "|".join(concept_ids)
-
-    query = (
-        "https://api.openalex.org/works?"
-        f"filter=from_publication_date:{start_date},concepts.id:{concept_filter}"
-        "&per_page=150"
-    )
-
-    recent = requests.get(query).json()
-
+def build_author_centroid():
     author_abstracts = []
 
     for author_id in AUTHOR_IDS:
@@ -144,18 +97,35 @@ def fetch_papers():
 
         for work in works.get("results", []):
             if work.get("abstract_inverted_index"):
-                author_abstracts.append(
-                    openalex_abstract_to_text(work["abstract_inverted_index"])
-                )
+                text = openalex_abstract_to_text(work["abstract_inverted_index"])
+                author_abstracts.append(text[:4000])
 
     if not author_abstracts:
-        print("Keine Autoren-Abstracts gefunden.")
+        return None
+
+    embeddings = [get_embedding(a) for a in author_abstracts]
+    return np.mean(embeddings, axis=0)
+
+# =========================
+# FETCH PAPERS
+# =========================
+
+def fetch_recent_papers():
+
+    start_date = (datetime.utcnow() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
+    centroid = build_author_centroid()
+
+    if centroid is None:
+        print("No author profile available.")
         return []
 
-    centroid = np.mean(
-        [get_embedding(a[:4000]) for a in author_abstracts[:20]],
-        axis=0
+    query = (
+        "https://api.openalex.org/works?"
+        f"filter=from_publication_date:{start_date}"
+        "&per_page=200"
     )
+
+    recent = requests.get(query).json()
 
     candidates = []
 
@@ -188,26 +158,32 @@ def fetch_papers():
     return sorted(candidates, key=lambda x: x["score"], reverse=True)
 
 # =========================
-# SCRIPT GENERATION (GERMAN)
+# SCRIPT GENERATION
 # =========================
 
 def generate_script(selected_papers):
 
+    desired_papers = len(selected_papers)
+    approx_minutes = max(TARGET_DURATION_MINUTES, desired_papers * BASE_MINUTES_PER_PAPER)
+
     section = ""
     for p in selected_papers:
-        section += f"\nPaper (Titel bleibt Englisch): {p['title']}\n"
+        section += f"\nPaper title: {p['title']}\n"
 
     prompt = (
-        "Erstelle einen klar strukturierten wissenschaftlichen Podcast-Dialog auf Deutsch.\n"
-        "Die Titel der Paper müssen im Original-Englisch genannt werden.\n\n"
-        "Ziel ist, dass die Zuhörer den wissenschaftlichen Inhalt verstehen.\n\n"
-        "Keine Dramatisierung.\n"
-        "Keine Hashtags.\n"
-        "Kein Markdown.\n\n"
-        "Für jedes Paper besprecht:\n"
-        "- Fragestellung\n"
-        "- Methodik\n"
-        "- Ergebnisse\n"
+        f"Create a structured academic podcast dialogue.\n"
+        f"Target length: approximately {approx_minutes} minutes.\n\n"
+        "Discuss ONLY the listed papers.\n"
+        "No cross-paper comparisons.\n"
+        "No general commentary.\n"
+        "No dramatic tone.\n\n"
+        "For each paper discuss:\n"
+        "- Research problem\n"
+        "- Methodology\n"
+        "- Main findings\n"
+        "Mark each paper start EXACTLY as:\n"
+        "=== PAPER: <Title> ===\n\n"
+        "Dialogue format strictly:\n"
         "MODERATOR:\nText\n\n"
         "AUTHOR:\nText\n"
     )
@@ -215,11 +191,11 @@ def generate_script(selected_papers):
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Erzeuge einen präzisen wissenschaftlichen Dialog."},
+            {"role": "system", "content": "Generate precise academic dialogue."},
             {"role": "user", "content": prompt + section}
         ],
         temperature=0.6,
-        max_tokens=8000
+        max_tokens=9000
     )
 
     script = response.choices[0].message.content
@@ -227,11 +203,10 @@ def generate_script(selected_papers):
     return script
 
 # =========================
-# AUDIO
+# AUDIO + CHAPTER TRACKING
 # =========================
 
 def process_block(speaker, text):
-
     voice = "alloy" if speaker == "moderator" else "verse"
     eq = apply_eq_moderator if speaker == "moderator" else apply_eq_author
 
@@ -241,28 +216,30 @@ def process_block(speaker, text):
         input=text
     )
 
-    temp_path = os.path.join(EPISODES_DIR, "temp.mp3")
-    with open(temp_path, "wb") as f:
+    temp = os.path.join(EPISODES_DIR, "temp.mp3")
+    with open(temp, "wb") as f:
         f.write(speech.content)
 
-    return eq(AudioSegment.from_mp3(temp_path))
+    return eq(AudioSegment.from_mp3(temp))
 
 def generate_audio(script):
 
-    if "MODERATOR" not in script or "AUTHOR" not in script:
-        raise ValueError("Script format invalid.")
-
     os.makedirs(EPISODES_DIR, exist_ok=True)
-
     filename = "episode_" + datetime.utcnow().strftime("%Y%m%d") + ".mp3"
     path = os.path.join(EPISODES_DIR, filename)
 
     segments = []
     speaker = None
     buffer = ""
+    chapter_positions = []
 
     for line in script.split("\n"):
         stripped = line.strip()
+
+        if stripped.startswith("=== PAPER:"):
+            title = stripped.replace("=== PAPER:", "").replace("===", "").strip()
+            chapter_positions.append({"title": title, "start": len(segments)})
+            continue
 
         if stripped.startswith("MODERATOR"):
             if buffer and speaker:
@@ -284,13 +261,7 @@ def generate_audio(script):
     if buffer and speaker:
         segments.append(process_block(speaker, buffer))
 
-    if not segments:
-        raise ValueError("Keine Sprachsegmente generiert.")
-
-    spoken = segments[0]
-    for seg in segments[1:]:
-        spoken += seg
-
+    spoken = sum(segments)
     spoken = speed_adjust(normalize(spoken))
     spoken = compress_dynamic_range(spoken, threshold=-20, ratio=2.0)
 
@@ -300,15 +271,36 @@ def generate_audio(script):
     final = normalize(intro + spoken + outro)
     final.export(path, format="mp3")
 
-    return filename, int(len(final) / 1000)
+    duration_seconds = int(len(final) / 1000)
+
+    # Generate chapter JSON
+    words_per_minute = 160
+    chapters = []
+    total_words = len(script.split())
+    total_seconds = (total_words / words_per_minute) * 60
+
+    for idx, ch in enumerate(chapter_positions):
+        start_word = int((idx / len(chapter_positions)) * total_words)
+        start_time = int((start_word / total_words) * total_seconds)
+        chapters.append({
+            "startTime": start_time,
+            "title": ch["title"]
+        })
+
+    chapter_file = filename.replace(".mp3", ".json")
+    with open(os.path.join(EPISODES_DIR, chapter_file), "w") as f:
+        json.dump({"version": "1.2.0", "chapters": chapters}, f, indent=2)
+
+    return filename, duration_seconds, chapter_file
 
 # =========================
 # RSS
 # =========================
 
-def update_rss(filename, duration, selected_papers):
+def update_rss(filename, duration, selected_papers, chapter_file):
 
     episode_url = f"{BASE_URL}/episodes/{filename}"
+    chapter_url = f"{BASE_URL}/episodes/{chapter_file}"
     pub_date = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
 
     if os.path.exists(FEED_PATH):
@@ -317,7 +309,10 @@ def update_rss(filename, duration, selected_papers):
         channel = rss.find("channel")
     else:
         rss = ET.Element("rss", version="2.0",
-                         attrib={"xmlns:itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd"})
+                         attrib={
+                             "xmlns:itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd",
+                             "xmlns:podcast": "https://podcastindex.org/namespace/1.0"
+                         })
         channel = ET.SubElement(rss, "channel")
         ET.SubElement(channel, "title").text = PODCAST_TITLE
         ET.SubElement(channel, "link").text = BASE_URL
@@ -329,7 +324,7 @@ def update_rss(filename, duration, selected_papers):
     episode_number = len(channel.findall("item")) + 1
     title = f"Ep. {str(episode_number).zfill(2)}"
 
-    description = "<h3>Besprochene Paper</h3><ul>"
+    description = "<h3>Discussed Papers</h3><ul>"
     for p in selected_papers:
         doi_link = f"https://doi.org/{p['doi']}"
         description += (
@@ -351,6 +346,8 @@ def update_rss(filename, duration, selected_papers):
     enclosure.set("url", episode_url)
     enclosure.set("type", "audio/mpeg")
 
+    ET.SubElement(item, "podcast:chapters").set("url", chapter_url)
+
     channel.insert(0, item)
     ET.ElementTree(rss).write(FEED_PATH, encoding="utf-8", xml_declaration=True)
 
@@ -359,21 +356,22 @@ def update_rss(filename, duration, selected_papers):
 # =========================
 
 def main():
-    ranked = fetch_papers()
+
+    ranked = fetch_recent_papers()
 
     if not ranked:
-        print("Keine passenden Paper gefunden.")
+        print("No aligned papers found.")
         return
 
-    num_papers = max(3, min(8, TARGET_DURATION_MINUTES // BASE_MINUTES_PER_PAPER))
-    selected = ranked[:num_papers]
+    # Dynamically adapt number of papers
+    approx_papers = TARGET_DURATION_MINUTES // BASE_MINUTES_PER_PAPER
+    selected = ranked[:max(3, min(10, approx_papers))]
 
     script = generate_script(selected)
-    filename, duration = generate_audio(script)
+    filename, duration, chapter_file = generate_audio(script)
+    update_rss(filename, duration, selected, chapter_file)
 
-    update_rss(filename, duration, selected)
-
-    print("Episode erstellt:", filename)
+    print("Episode generated:", filename)
 
 if __name__ == "__main__":
     main()
