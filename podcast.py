@@ -1,28 +1,41 @@
 import os
 import requests
 import re
+import json
+import html
 from openai import OpenAI
 from pydub import AudioSegment
 from datetime import datetime, timedelta
+import xml.etree.ElementTree as ET
 
 # =========================
 # CONFIG
 # =========================
 
-TOPICS = ["TOPIC_ONE", "TOPIC_TWO"]  # customize
+TOPICS = ["Lipid nanoparticle", "bioconjugation"]
 DAYS_BACK = 14
 MAX_PAPERS_PER_TOPIC = 12
 TOP_SELECTION_TOTAL = 6
+MAX_FEED_ITEMS = 20
 
 SITE_URL = "https://juppifluppi.github.io"
 EPISODES_DIR = "episodes"
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # =========================
-# FETCH CROSSREF
+# UTILITIES
+# =========================
+
+def strip_html(text):
+    if not text:
+        return ""
+    clean = re.sub("<.*?>", "", text)
+    return html.unescape(clean)
+
+# =========================
+# FETCH FROM CROSSREF
 # =========================
 
 def fetch_crossref():
@@ -44,7 +57,7 @@ def fetch_crossref():
 
         for item in data.get("message", {}).get("items", []):
             title = item.get("title", ["No title"])[0]
-            abstract = item.get("abstract", "")
+            abstract = strip_html(item.get("abstract", ""))
             doi = item.get("DOI", "")
             journal = item.get("container-title", ["Unknown Journal"])[0]
             citations = item.get("is-referenced-by-count", 0)
@@ -80,7 +93,6 @@ Abstract: {p['summary']}
 
     prompt = f"""
 Select the {TOP_SELECTION_TOTAL} most important papers.
-
 Return ONLY numbers separated by commas.
 
 Prioritize:
@@ -88,7 +100,7 @@ Prioritize:
 - methodological innovation
 - conceptual novelty
 - forward-looking implications
-- citation count (as signal, not sole criterion)
+- citation count as signal
 """
 
     response = client.chat.completions.create(
@@ -118,8 +130,9 @@ def generate_script(selected_papers):
     section = ""
     for p in selected_papers:
         section += f"""
+### PAPER_START: {p['title']}
+
 Topic: {p['topic']}
-Title (Original English): {p['title']}
 Journal: {p['journal']}
 Citations: {p['citations']}
 Abstract: {p['summary']}
@@ -130,39 +143,31 @@ DOI: {p['doi']}
 Erstelle ein ca. 6000 Wörter langes technisches Forschungspodcast-Skript.
 
 Sprache: Deutsch.
-Zielgruppe: Forschende mit Fachkenntnis.
+Zielgruppe: Forschende.
 Keine Einleitungen.
 Keine Musik-Erwähnung.
 Keine Vereinfachungen.
 
-Struktur:
+Jedes Paper MUSS mit der Marker-Zeile beginnen:
+### PAPER_START: <Original Title>
 
-- Direkter Einstieg in analytische Diskussion.
-- Jedes Paper erhält eine klar abgegrenzte Sektion.
-- Pro Paper:
-    • Theoretischer Rahmen
-    • Konzeptionell relevante Methodik
-    • Zentrale Ergebnisse
-    • Kritische Einordnung
-    • Limitationen
-    • Konkrete Forschungsimplikationen
-- Abschließend:
-    • Synthese übergreifender Trends
-    • Identifikation emergenter Forschungscluster
-    • Bewertung möglicher Paradigmenverschiebungen
-
-Papers:
-{section}
+Diskutiere:
+- Theoretischer Rahmen
+- Relevante Methodik
+- Zentrale Ergebnisse
+- Limitationen
+- Forschungsimplikationen
+- Emergende Trends übergreifend
 """
 
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": "Du bist ein präziser wissenschaftlicher Analyst."},
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": prompt + section}
         ],
         temperature=0.4,
-        max_tokens=9000
+        max_tokens=19000
     )
 
     return response.choices[0].message.content
@@ -188,7 +193,6 @@ def generate_audio(script):
     )
 
     os.makedirs(EPISODES_DIR, exist_ok=True)
-
     filename = f"episode_{datetime.utcnow().strftime('%Y%m%d')}.mp3"
     spoken_path = os.path.join(EPISODES_DIR, "spoken.mp3")
 
@@ -200,9 +204,8 @@ def generate_audio(script):
 
     spoken = speed_up(normalize(spoken))
     intro = normalize(intro - 5)
-    outro = intro
 
-    combined = intro.fade_out(1500) + spoken + outro.fade_in(1500)
+    combined = intro.fade_out(1500) + spoken + intro.fade_in(1500)
     combined = normalize(combined)
 
     final_path = os.path.join(EPISODES_DIR, filename)
@@ -211,7 +214,7 @@ def generate_audio(script):
     return filename
 
 # =========================
-# RSS UPDATE
+# RSS UPDATE (PROPER XML)
 # =========================
 
 def update_rss(filename):
@@ -219,32 +222,34 @@ def update_rss(filename):
     episode_url = f"{SITE_URL}/episodes/{filename}"
     pub_date = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
 
-    item = f"""
-    <item>
-        <title>Research Update {filename}</title>
-        <enclosure url="{episode_url}" type="audio/mpeg"/>
-        <pubDate>{pub_date}</pubDate>
-    </item>
-    """
+    rss = ET.Element("rss", version="2.0")
+    channel = ET.SubElement(rss, "channel")
 
+    ET.SubElement(channel, "title").text = "Private Research Podcast"
+    ET.SubElement(channel, "link").text = SITE_URL
+    ET.SubElement(channel, "description").text = "Automated Research Monitoring"
+
+    # Load old items if exist
+    old_items = []
     if os.path.exists(feed_path):
-        with open(feed_path, "r") as f:
-            content = f.read()
-        content = content.replace("</channel>", item + "\n</channel>")
-    else:
-        content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-<channel>
-<title>Private Research Podcast</title>
-<link>{SITE_URL}</link>
-<description>Automated Research Monitoring</description>
-{item}
-</channel>
-</rss>
-"""
+        tree = ET.parse(feed_path)
+        old_channel = tree.getroot().find("channel")
+        old_items = old_channel.findall("item")
 
-    with open(feed_path, "w") as f:
-        f.write(content)
+    # New item
+    item = ET.SubElement(channel, "item")
+    ET.SubElement(item, "title").text = f"Research Update {filename}"
+    ET.SubElement(item, "pubDate").text = pub_date
+    enclosure = ET.SubElement(item, "enclosure")
+    enclosure.set("url", episode_url)
+    enclosure.set("type", "audio/mpeg")
+
+    # Append old items
+    for old in old_items[:MAX_FEED_ITEMS - 1]:
+        channel.append(old)
+
+    tree = ET.ElementTree(rss)
+    tree.write(feed_path, encoding="utf-8", xml_declaration=True)
 
 # =========================
 # MAIN
