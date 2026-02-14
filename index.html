@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Research Updates</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 700px;
+      margin: 40px auto;
+      line-height: 1.6;
+    }
+    img {
+      width: 200px;
+    }
+    .episode {
+      margin-bottom: 30px;
+      padding-bottom: 15px;
+      border-bottom: 1px solid #ccc;
+    }
+  </style>
+</head>
+<body>
+
+<h1>Research Updates</h1>
+<img src="cover.png" alt="Podcast Cover">
+
+<div id="episodes"></div>
+
+<script>
+fetch('feed.xml')
+  .then(response => response.text())
+  .then(str => (new window.DOMParser()).parseFromString(str, "text/xml"))
+  .then(data => {
+    const items = data.querySelectorAll("item");
+    const container = document.getElementById("episodes");
+
+    items.forEach(item => {
+      const title = item.querySelector("title").textContent;
+      const description = item.querySelector("description").textContent;
+      const audio = item.querySelector("enclosure").getAttribute("url");
+
+      const div = document.createElement("div");
+      div.className = "episode";
+      div.innerHTML = `
+        <h3>${title}</h3>
+        <audio controls src="${audio}"></audio>
+        <div>${description}</div>
+      `;
+      container.appendChild(div);
+    });
+  });
+</script>
+
+</body>
+</html>
