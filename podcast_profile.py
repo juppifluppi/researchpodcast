@@ -161,10 +161,11 @@ def fetch_recent_papers():
     params = {
         "filter": f"publication_date:>{start_date}",
         "sort": "publication_date:desc",
-        "per_page": 300
-    }
+        "per_page": 200
+     }
 
     response = requests.get("https://api.openalex.org/works", params=params)
+
 
     if response.status_code != 200:
         print("OpenAlex error:", response.status_code)
