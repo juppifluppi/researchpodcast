@@ -1,7 +1,6 @@
 import os
 import requests
 import numpy as np
-import random
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from openai import OpenAI
@@ -13,6 +12,7 @@ from pydub.effects import compress_dynamic_range, high_pass_filter, low_pass_fil
 # =========================
 
 AUTHOR_IDS = [
+    "https://openalex.org/A5001051737",
     "https://openalex.org/A5018917714"
 ]
 
@@ -130,7 +130,6 @@ def fetch_papers():
     recent = requests.get(query).json()
 
     author_abstracts = []
-
     for author_id in AUTHOR_IDS:
         works = requests.get(
             f"https://api.openalex.org/works?filter=author.id:{author_id}&per_page=40"
@@ -143,6 +142,7 @@ def fetch_papers():
                 )
 
     if not author_abstracts:
+        print("No author abstracts found.")
         return []
 
     centroid = np.mean(
@@ -176,30 +176,37 @@ def fetch_papers():
             "summary": abstract,
             "journal": journal,
             "doi": doi,
-            "citations": citations,
             "score": score
         })
 
-    ranked = sorted(candidates, key=lambda x: x["score"], reverse=True)
-    return ranked
+    return sorted(candidates, key=lambda x: x["score"], reverse=True)
 
 # =========================
 # SCRIPT GENERATION
 # =========================
 
 def generate_script(selected_papers):
+
     section = ""
     for p in selected_papers:
-        section += f"\n### PAPER_START: {p['title']}\n"
+        section += f"\nPaper: {p['title']}\n"
 
     prompt = (
-        "Create a scientific podcast dialogue.\n"
-        "Moderator slightly contrarian.\n"
-        "Include controlled disagreement.\n"
-        "No statistical deep dives.\n"
-        "Discuss only listed papers.\n\n"
-        "Format:\n\n"
-        "### PAPER_START: <Title>\n\n"
+        "Create a clear, structured scientific podcast dialogue.\n"
+        "The purpose is that listeners understand the manuscripts.\n"
+        "No contrarian tone.\n"
+        "No humor.\n"
+        "No hashtags.\n"
+        "No markdown.\n"
+        "No rhetorical drama.\n\n"
+        "For each paper discuss:\n"
+        "- Research problem\n"
+        "- Core innovation\n"
+        "- Mechanism\n"
+        "- Main findings\n"
+        "- Practical implications\n"
+        "- Brief limitations\n\n"
+        "Format strictly:\n\n"
         "MODERATOR:\nText\n\n"
         "AUTHOR:\nText\n"
     )
@@ -207,14 +214,18 @@ def generate_script(selected_papers):
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Generate natural academic dialogue."},
+            {"role": "system", "content": "Generate a structured academic dialogue."},
             {"role": "user", "content": prompt + section}
         ],
-        temperature=0.85,
+        temperature=0.6,
         max_tokens=8000
     )
 
-    return response.choices[0].message.content
+    script = response.choices[0].message.content
+
+    # Clean potential markdown artifacts
+    script = script.replace("#", "")
+    return script
 
 # =========================
 # AUDIO
@@ -237,7 +248,12 @@ def process_block(speaker, text):
     return eq(AudioSegment.from_mp3(temp))
 
 def generate_audio(script):
+
+    if "MODERATOR" not in script or "AUTHOR" not in script:
+        raise ValueError("Script format invalid.")
+
     os.makedirs(EPISODES_DIR, exist_ok=True)
+
     filename = "episode_" + datetime.utcnow().strftime("%Y%m%d") + ".mp3"
     path = os.path.join(EPISODES_DIR, filename)
 
@@ -269,7 +285,7 @@ def generate_audio(script):
         segments.append(process_block(speaker, buffer))
 
     if not segments:
-        raise ValueError("No speech segments generated. Script parsing failed.")
+        raise ValueError("No speech segments generated.")
 
     spoken = segments[0]
     for seg in segments[1:]:
@@ -287,7 +303,7 @@ def generate_audio(script):
     return filename, int(len(final) / 1000)
 
 # =========================
-# RSS GENERATION
+# RSS
 # =========================
 
 def update_rss(filename, duration, selected_papers):
@@ -303,12 +319,10 @@ def update_rss(filename, duration, selected_papers):
         rss = ET.Element("rss", version="2.0",
                          attrib={"xmlns:itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd"})
         channel = ET.SubElement(rss, "channel")
-
         ET.SubElement(channel, "title").text = PODCAST_TITLE
         ET.SubElement(channel, "link").text = BASE_URL
         ET.SubElement(channel, "description").text = PODCAST_DESCRIPTION
         ET.SubElement(channel, "language").text = PODCAST_LANGUAGE
-
         image = ET.SubElement(channel, "itunes:image")
         image.set("href", COVER_URL)
 
