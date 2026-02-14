@@ -146,37 +146,63 @@ def field_allowed(work):
 def fetch_recent_papers():
 
     centroid, author_refs, author_journal_ids = build_author_profile()
+
     if centroid is None:
         print("Author profile empty.")
         return []
 
-    # ---------- Use larger retrieval window ----------
+    # -------------------------------
+    # Step 1: Retrieve larger pool
+    # -------------------------------
+
     pool_days = max(DAYS_BACK, 30)
     start_date = (datetime.utcnow() - timedelta(days=pool_days)).strftime("%Y-%m-%d")
 
-    query = (
-        "https://api.openalex.org/works?"
-        f"filter=publication_date:>{start_date}"
-        "&per_page=300"
-    )
+    params = {
+        "filter": f"publication_date:>{start_date}",
+        "sort": "publication_date:desc",
+        "per_page": 300
+    }
 
-    recent = requests.get(query).json()
-    results = recent.get("results", [])
+    response = requests.get("https://api.openalex.org/works", params=params)
+
+    if response.status_code != 200:
+        print("OpenAlex error:", response.status_code)
+        print(response.text)
+        return []
+
+    data = response.json()
+    results = data.get("results", [])
 
     if not results:
         print("OpenAlex returned no recent works.")
         return []
 
-    # ---------- Build 2-hop reference expansion ----------
+    print("Retrieved", len(results), "recent works.")
+
+    # -------------------------------
+    # Step 2: Build 2-hop graph
+    # -------------------------------
+
     two_hop_refs = set(author_refs)
 
     for ref_id in list(author_refs)[:150]:
         try:
-            ref_data = requests.get(f"https://api.openalex.org/works/{ref_id}").json()
-            for second_ref in ref_data.get("referenced_works", []):
+            ref_data = requests.get(f"https://api.openalex.org/works/{ref_id}")
+            if ref_data.status_code != 200:
+                continue
+            ref_json = ref_data.json()
+            for second_ref in ref_json.get("referenced_works", []):
                 two_hop_refs.add(second_ref)
         except:
             continue
+
+    print("1-hop refs:", len(author_refs))
+    print("2-hop refs:", len(two_hop_refs))
+
+    # -------------------------------
+    # Step 3: Score candidates
+    # -------------------------------
 
     candidates = []
 
@@ -210,7 +236,7 @@ def fetch_recent_papers():
             except:
                 days_old = 0
 
-        # Stronger recency weighting
+        # recency weighting
         recency_score = 2 / (1 + days_old)
 
         base_score = (
@@ -239,27 +265,37 @@ def fetch_recent_papers():
         print("No candidates after scoring.")
         return []
 
-    # ---------- Sort by base graph score ----------
-    candidates = sorted(candidates, key=lambda x: x["base_score"], reverse=True)
+    print("Scored", len(candidates), "candidates.")
 
-    # ---------- Ensure non-zero selection ----------
-    top_candidates = candidates[:100]
+    # -------------------------------
+    # Step 4: Preselect before embedding
+    # -------------------------------
 
-    # ---------- Embedding refinement only if abstract exists ----------
+    candidates = sorted(candidates, key=lambda x: x["base_score"], reverse=True)[:80]
+
+    # -------------------------------
+    # Step 5: Embedding refinement
+    # -------------------------------
+
     refined = []
 
-    for c in top_candidates:
+    for c in candidates:
 
         if c["abstract"]:
-            emb = get_embedding(c["abstract"][:4000])
-            sim = cosine_similarity(emb, centroid)
-            c["final_score"] = c["base_score"] + 0.2 * sim
+            try:
+                emb = get_embedding(c["abstract"][:4000])
+                sim = cosine_similarity(emb, centroid)
+                c["final_score"] = c["base_score"] + 0.2 * sim
+            except:
+                c["final_score"] = c["base_score"]
         else:
             c["final_score"] = c["base_score"]
 
         refined.append(c)
 
     refined = sorted(refined, key=lambda x: x["final_score"], reverse=True)
+
+    print("Returning top", len(refined[:50]), "ranked papers.")
 
     return refined[:50]
 
