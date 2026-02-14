@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 # CONFIG
 # =========================
 
-TOPICS = ["Lipid nanoparticle", "bioconjugation"]
+TOPICS = ["TOPIC_ONE", "TOPIC_TWO"]  # Customize
 DAYS_BACK = 14
 MAX_PAPERS_PER_TOPIC = 12
 TOP_SELECTION_TOTAL = 6
@@ -33,6 +33,15 @@ def strip_html(text):
         return ""
     clean = re.sub("<.*?>", "", text)
     return html.unescape(clean)
+
+def normalize(audio):
+    return audio.apply_gain(-20.0 - audio.dBFS)
+
+def speed_up(audio, speed=1.18):
+    return audio._spawn(
+        audio.raw_data,
+        overrides={"frame_rate": int(audio.frame_rate * speed)}
+    ).set_frame_rate(audio.frame_rate)
 
 # =========================
 # FETCH FROM CROSSREF
@@ -167,40 +176,47 @@ Diskutiere:
             {"role": "user", "content": prompt + section}
         ],
         temperature=0.4,
-        max_tokens=9000
+        max_tokens=8500
     )
 
     return response.choices[0].message.content
 
 # =========================
-# AUDIO PROCESSING
+# CHUNKED TTS (FIXES 2000 TOKEN LIMIT)
 # =========================
 
-def normalize(audio):
-    return audio.apply_gain(-20.0 - audio.dBFS)
-
-def speed_up(audio, speed=1.18):
-    return audio._spawn(
-        audio.raw_data,
-        overrides={"frame_rate": int(audio.frame_rate * speed)}
-    ).set_frame_rate(audio.frame_rate)
-
 def generate_audio(script):
-    speech = client.audio.speech.create(
-        model="gpt-4o-mini-tts",
-        voice="alloy",
-        input=script,
-    )
-
     os.makedirs(EPISODES_DIR, exist_ok=True)
     filename = f"episode_{datetime.utcnow().strftime('%Y%m%d')}.mp3"
-    spoken_path = os.path.join(EPISODES_DIR, "spoken.mp3")
+    final_path = os.path.join(EPISODES_DIR, filename)
 
-    with open(spoken_path, "wb") as f:
-        f.write(speech.content)
+    # Split into safe chunks
+    max_words_per_chunk = 900
+    words = script.split()
+    chunks = [
+        " ".join(words[i:i + max_words_per_chunk])
+        for i in range(0, len(words), max_words_per_chunk)
+    ]
+
+    audio_segments = []
+
+    for chunk in chunks:
+        speech = client.audio.speech.create(
+            model="gpt-4o-mini-tts",
+            voice="alloy",
+            input=chunk,
+        )
+
+        temp_path = os.path.join(EPISODES_DIR, "temp_chunk.mp3")
+        with open(temp_path, "wb") as f:
+            f.write(speech.content)
+
+        segment = AudioSegment.from_mp3(temp_path)
+        audio_segments.append(segment)
+
+    spoken = sum(audio_segments)
 
     intro = AudioSegment.from_mp3("intro_music.mp3")
-    spoken = AudioSegment.from_mp3(spoken_path)
 
     spoken = speed_up(normalize(spoken))
     intro = normalize(intro - 5)
@@ -208,13 +224,12 @@ def generate_audio(script):
     combined = intro.fade_out(1500) + spoken + intro.fade_in(1500)
     combined = normalize(combined)
 
-    final_path = os.path.join(EPISODES_DIR, filename)
     combined.export(final_path, format="mp3")
 
     return filename
 
 # =========================
-# RSS UPDATE (PROPER XML)
+# RSS UPDATE (SAFE XML)
 # =========================
 
 def update_rss(filename):
@@ -229,22 +244,20 @@ def update_rss(filename):
     ET.SubElement(channel, "link").text = SITE_URL
     ET.SubElement(channel, "description").text = "Automated Research Monitoring"
 
-    # Load old items if exist
     old_items = []
     if os.path.exists(feed_path):
         tree = ET.parse(feed_path)
         old_channel = tree.getroot().find("channel")
         old_items = old_channel.findall("item")
 
-    # New item
     item = ET.SubElement(channel, "item")
     ET.SubElement(item, "title").text = f"Research Update {filename}"
     ET.SubElement(item, "pubDate").text = pub_date
+
     enclosure = ET.SubElement(item, "enclosure")
     enclosure.set("url", episode_url)
     enclosure.set("type", "audio/mpeg")
 
-    # Append old items
     for old in old_items[:MAX_FEED_ITEMS - 1]:
         channel.append(old)
 
