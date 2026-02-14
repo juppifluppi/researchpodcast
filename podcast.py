@@ -13,8 +13,8 @@ from datetime import datetime, timedelta
 # CONFIG
 # =========================
 
-TOPICS = ["lipid nanoparticle", "bioconjugation", "drug mucin bile interactions", "polyoxazoline"]
-TRACK_AUTHORS = ["Lorenz Meinel", "Tessa Lühmann", "Christoph Sotriffer", "Robert Luxenhofer", "Christel Bergström"]
+TOPICS = ["mRNA lipid nanoparticle", "bioconjugation", "drug mucin bile interactions", "polyoxazoline"]
+TRACK_AUTHORS = []
 
 DAYS_BACK = 7
 MAX_PAPERS_PER_TOPIC = 12
@@ -38,7 +38,7 @@ def strip_html(text):
 def normalize(audio):
     return audio.apply_gain(-20.0 - audio.dBFS)
 
-def speed_adjust(audio, speed=1.06):  # faster again
+def speed_adjust(audio, speed=1.10):
     return audio._spawn(
         audio.raw_data,
         overrides={"frame_rate": int(audio.frame_rate * speed)}
@@ -244,7 +244,7 @@ def generate_audio(script):
     if len(spoken) < 5000:
         raise ValueError("No speech generated. Dialogue parsing failed.")
 
-    spoken = speed_adjust(normalize(spoken), speed=1.06)
+    spoken = speed_adjust(normalize(spoken), speed=1.10)
 
     spoken = compress_dynamic_range(
         spoken,
