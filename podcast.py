@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 # =========================
 
 TOPICS = ["lipid nanoparticle", "bioconjugation"]
-DAYS_BACK = 7
+DAYS_BACK = 14
 MAX_PAPERS_PER_TOPIC = 12
 TOP_SELECTION_TOTAL = 6
 MAX_FEED_ITEMS = 20
@@ -122,7 +122,7 @@ Abstract: {p['summary']}
     prompt = f"""
 Select the {TOP_SELECTION_TOTAL} most important papers.
 Return ONLY numbers separated by commas.
-Consider theoretical impact, novelty, forward implications, and citations.
+Consider impact, novelty, forward implications, and citations.
 """
 
     response = client.chat.completions.create(
@@ -165,7 +165,6 @@ Erstelle ein ca. 6000 Wörter langes wissenschaftliches Podcastgespräch im Dial
 Sprache: Deutsch.
 Natürlich klingend.
 Keine Listen.
-Keine Musik-Erwähnung.
 
 Moderator-Persönlichkeit:
 {moderator_personality}
@@ -179,17 +178,12 @@ AUTOR:
 <Text>
 
 Erlaubt:
-- gelegentliche Mikro-Hesitationen ("hm,", "also,", "wenn man ehrlich ist,")
-- gelegentliche ironische Reflexion
-- gelegentliche Unterbrechungen wie:
-  "Moment, aber..."
-  "Darf ich kurz einhaken?"
-  "Ist das wirklich robust?"
-
-Am Anfang implizit ein thematischer roter Faden.
+- gelegentliche Mikro-Hesitationen ("hm,", "also,")
+- gelegentliche Unterbrechungen
+- leichte Spannung
 
 Am Ende jedes Papers:
-MODERATOR fasst kritisch in 3–4 Sätzen zusammen.
+MODERATOR fasst kritisch zusammen.
 
 Jedes Paper beginnt exakt mit:
 ### PAPER_START: <Title>
@@ -198,7 +192,7 @@ Jedes Paper beginnt exakt mit:
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Du erzeugst ein lebendiges wissenschaftliches Streitgespräch mit thematischem roten Faden."},
+            {"role": "system", "content": "Du erzeugst ein lebendiges wissenschaftliches Gespräch."},
             {"role": "user", "content": prompt + section}
         ],
         temperature=0.85,
@@ -212,13 +206,11 @@ Jedes Paper beginnt exakt mit:
 # =========================
 
 def generate_summary(script):
-    prompt = "Erstelle eine prägnante wissenschaftliche Zusammenfassung (5–7 Sätze)."
-
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": "Du bist wissenschaftlicher Redakteur."},
-            {"role": "user", "content": prompt + script[:3000]}
+            {"role": "user", "content": "Erstelle eine prägnante wissenschaftliche Zusammenfassung (5–7 Sätze).\n" + script[:3000]}
         ],
         temperature=0.3,
         max_tokens=400
@@ -247,16 +239,21 @@ def generate_audio(script):
             segments.append(random_long_pause())
             continue
 
-        if line.startswith("MODERATOR:"):
-            text = line.replace("MODERATOR:", "").strip()
-            voice = "alloy"
-            pan = -0.12
-            eq_func = apply_eq_moderator
-        elif line.startswith("AUTOR:"):
-            text = line.replace("AUTOR:", "").strip()
-            voice = "verse"
-            pan = 0.12
-            eq_func = apply_eq_author
+        # Robust speaker parsing
+        speaker_match = re.match(r"^(MODERATOR|Moderator|AUTOR|Autor)\s*[:\-]\s*(.*)", line)
+
+        if speaker_match:
+            speaker = speaker_match.group(1).lower()
+            text = speaker_match.group(2).strip()
+
+            if "moderator" in speaker:
+                voice = "alloy"
+                pan = -0.12
+                eq_func = apply_eq_moderator
+            else:
+                voice = "verse"
+                pan = 0.12
+                eq_func = apply_eq_author
         else:
             continue
 
@@ -283,17 +280,21 @@ def generate_audio(script):
             segments.append(random_pause())
 
     spoken = sum(segments)
+
+    if len(spoken) < 5000:
+        raise ValueError("No speech segments were generated. Check script formatting.")
+
     spoken = speed_adjust(normalize(spoken), speed=1.02)
 
-    # Room tone
-    room = AudioSegment.from_mp3("room_tone.mp3") - 32
-    if len(room) < len(spoken):
-        loops = len(spoken) // len(room) + 1
-        room = room * loops
-    room = room[:len(spoken)]
-    spoken = spoken.overlay(room)
+    # Optional room tone
+    if os.path.exists("room_tone.mp3"):
+        room = AudioSegment.from_mp3("room_tone.mp3") - 32
+        if len(room) < len(spoken):
+            loops = len(spoken) // len(room) + 1
+            room = room * loops
+        room = room[:len(spoken)]
+        spoken = spoken.overlay(room)
 
-    # Light compression
     spoken = compress_dynamic_range(
         spoken,
         threshold=-22.0,
@@ -303,8 +304,7 @@ def generate_audio(script):
     )
 
     intro = AudioSegment.from_mp3("intro_music.mp3")
-    intro = normalize(intro)
-    intro = intro.fade_out(2500)
+    intro = normalize(intro).fade_out(2500)
 
     final_audio = intro + spoken
     final_audio = normalize(final_audio)
@@ -313,96 +313,6 @@ def generate_audio(script):
 
     duration_seconds = int(len(final_audio) / 1000)
     return filename, duration_seconds
-
-# =========================
-# CHAPTER MARKERS
-# =========================
-
-def generate_chapters(script, filename):
-    matches = list(re.finditer(r"### PAPER_START: (.+)", script))
-    words = script.split()
-    total_words = len(words)
-    words_per_minute = 160
-    total_seconds = (total_words / words_per_minute) * 60
-
-    chapters = []
-    for match in matches:
-        title = match.group(1)
-        start_words = len(script[:match.start()].split())
-        start_seconds = int((start_words / total_words) * total_seconds)
-        chapters.append({"startTime": start_seconds, "title": title})
-
-    chapter_file = filename.replace(".mp3", ".json")
-    chapter_path = os.path.join(EPISODES_DIR, chapter_file)
-
-    with open(chapter_path, "w") as f:
-        json.dump({"version": "1.2.0", "chapters": chapters}, f, indent=2)
-
-    return chapter_file
-
-# =========================
-# RSS UPDATE
-# =========================
-
-def update_rss(filename, duration_seconds, summary, chapter_file, selected_papers):
-    feed_path = "feed.xml"
-    episode_url = f"{BASE_URL}/episodes/{filename}"
-    chapter_url = f"{BASE_URL}/episodes/{chapter_file}"
-    cover_url = f"{BASE_URL}/cover.png"
-
-    pub_date = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
-
-    papers_text = "\n\n---\n\n<b>Discussed Papers:</b>\n\n"
-    for i, p in enumerate(selected_papers, 1):
-        doi_link = f"https://doi.org/{p['doi']}" if p['doi'] else "No DOI available"
-        papers_text += (
-            f"{i}. <b>{p['title']}</b><br>"
-            f"<i>{p['journal']}</i><br>"
-            f"{doi_link}<br><br>"
-        )
-
-    full_description = summary + papers_text
-
-    rss = ET.Element("rss", version="2.0")
-    rss.set("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
-    rss.set("xmlns:podcast", "https://podcastindex.org/namespace/1.0")
-
-    channel = ET.SubElement(rss, "channel")
-    ET.SubElement(channel, "title").text = PODCAST_TITLE
-    ET.SubElement(channel, "link").text = BASE_URL
-    ET.SubElement(channel, "description").text = PODCAST_DESCRIPTION
-    ET.SubElement(channel, "language").text = PODCAST_LANGUAGE
-    ET.SubElement(channel, "itunes:author").text = PODCAST_AUTHOR
-    ET.SubElement(channel, "itunes:explicit").text = "no"
-
-    image = ET.SubElement(channel, "itunes:image")
-    image.set("href", cover_url)
-    ET.SubElement(channel, "itunes:category").set("text", PODCAST_CATEGORY)
-
-    episode_number = 1
-    if os.path.exists(feed_path):
-        tree = ET.parse(feed_path)
-        old_channel = tree.getroot().find("channel")
-        items = old_channel.findall("item")
-        episode_number = len(items) + 1
-        for old in items[:MAX_FEED_ITEMS - 1]:
-            channel.append(old)
-
-    item = ET.SubElement(channel, "item")
-    ET.SubElement(item, "title").text = f"Episode {episode_number}"
-    ET.SubElement(item, "description").text = full_description
-    ET.SubElement(item, "itunes:duration").text = str(duration_seconds)
-    ET.SubElement(item, "itunes:episode").text = str(episode_number)
-    ET.SubElement(item, "pubDate").text = pub_date
-    ET.SubElement(item, "guid").text = episode_url
-
-    enclosure = ET.SubElement(item, "enclosure")
-    enclosure.set("url", episode_url)
-    enclosure.set("type", "audio/mpeg")
-
-    ET.SubElement(item, "podcast:chapters").set("url", chapter_url)
-
-    ET.ElementTree(rss).write(feed_path, encoding="utf-8", xml_declaration=True)
 
 # =========================
 # MAIN
@@ -414,8 +324,7 @@ def main():
     script = generate_script(ranked)
     summary = generate_summary(script)
     filename, duration = generate_audio(script)
-    chapter_file = generate_chapters(script, filename)
-    update_rss(filename, duration, summary, chapter_file, ranked)
+    print("Episode generated:", filename, "Duration:", duration)
 
 if __name__ == "__main__":
     main()
