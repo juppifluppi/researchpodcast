@@ -26,9 +26,9 @@ ALLOWED_FIELDS = {
     "Biomedical Engineering"
 }
 
-DAYS_BACK = 7
+DAYS_BACK = 30
 TARGET_DURATION_MINUTES = 30
-BASE_MINUTES_PER_PAPER = 4
+BASE_MINUTES_PER_PAPER = 3
 MAX_FEED_ITEMS = 10
 
 BASE_URL = "https://juppifluppi.github.io/researchpodcast"
@@ -147,15 +147,30 @@ def fetch_recent_papers():
 
     centroid, author_refs, author_journal_ids = build_author_profile()
     if centroid is None:
+        print("Author profile empty.")
         return []
 
-    start_date = (datetime.utcnow() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
+    # ---------- Use larger retrieval window ----------
+    pool_days = max(DAYS_BACK, 30)
+    start_date = (datetime.utcnow() - timedelta(days=pool_days)).strftime("%Y-%m-%d")
 
-    # -------- Build 2-hop reference expansion --------
+    query = (
+        "https://api.openalex.org/works?"
+        f"filter=from_publication_date:{start_date}"
+        "&per_page=300"
+    )
+
+    recent = requests.get(query).json()
+    results = recent.get("results", [])
+
+    if not results:
+        print("OpenAlex returned no recent works.")
+        return []
+
+    # ---------- Build 2-hop reference expansion ----------
     two_hop_refs = set(author_refs)
 
-    # Expand references of references (limit to avoid explosion)
-    for ref_id in list(author_refs)[:200]:
+    for ref_id in list(author_refs)[:150]:
         try:
             ref_data = requests.get(f"https://api.openalex.org/works/{ref_id}").json()
             for second_ref in ref_data.get("referenced_works", []):
@@ -163,30 +178,15 @@ def fetch_recent_papers():
         except:
             continue
 
-    # -------- Fetch recent papers --------
-    query = (
-        "https://api.openalex.org/works?"
-        f"filter=from_publication_date:{start_date}"
-        "&per_page=250"
-    )
-
-    recent = requests.get(query).json()
     candidates = []
 
-    for work in recent.get("results", []):
+    for work in results:
 
-        if not work.get("abstract_inverted_index"):
-            continue
+        refs = set(work.get("referenced_works", []))
 
-        abstract = openalex_abstract_to_text(work["abstract_inverted_index"])
+        overlap_1 = len(refs & author_refs)
+        overlap_2 = len(refs & two_hop_refs)
 
-        # -------- 1-hop overlap --------
-        overlap_1 = len(set(work.get("referenced_works", [])) & author_refs)
-
-        # -------- 2-hop overlap --------
-        overlap_2 = len(set(work.get("referenced_works", [])) & two_hop_refs)
-
-        # weighted graph score
         graph_score = (0.7 * overlap_1) + (0.3 * overlap_2)
 
         citations = work.get("cited_by_count", 0)
@@ -210,20 +210,25 @@ def fetch_recent_papers():
             except:
                 days_old = 0
 
-        recency_score = 1 / (1 + days_old)
+        # Stronger recency weighting
+        recency_score = 2 / (1 + days_old)
 
         base_score = (
             0.5 * graph_score +
             0.2 * journal_score +
-            0.1 * recency_score
+            0.2 * recency_score
         ) * citation_multiplier
+
+        abstract = ""
+        if work.get("abstract_inverted_index"):
+            abstract = openalex_abstract_to_text(work["abstract_inverted_index"])
 
         doi = work.get("doi", "")
         if doi:
             doi = doi.replace("https://doi.org/", "")
 
         candidates.append({
-            "title": work["title"],
+            "title": work.get("title", "Untitled"),
             "journal": journal_name,
             "doi": doi,
             "abstract": abstract,
@@ -231,40 +236,32 @@ def fetch_recent_papers():
         })
 
     if not candidates:
-        print("Fallback: using embedding-only ranking.")
+        print("No candidates after scoring.")
+        return []
 
-        # embedding-only fallback (guaranteed non-zero)
-        fallback = []
-        for work in recent.get("results", []):
-            if not work.get("abstract_inverted_index"):
-                continue
+    # ---------- Sort by base graph score ----------
+    candidates = sorted(candidates, key=lambda x: x["base_score"], reverse=True)
 
-            abstract = openalex_abstract_to_text(work["abstract_inverted_index"])
-            emb = get_embedding(abstract[:4000])
+    # ---------- Ensure non-zero selection ----------
+    top_candidates = candidates[:100]
+
+    # ---------- Embedding refinement only if abstract exists ----------
+    refined = []
+
+    for c in top_candidates:
+
+        if c["abstract"]:
+            emb = get_embedding(c["abstract"][:4000])
             sim = cosine_similarity(emb, centroid)
+            c["final_score"] = c["base_score"] + 0.2 * sim
+        else:
+            c["final_score"] = c["base_score"]
 
-            fallback.append({
-                "title": work["title"],
-                "journal": work.get("primary_location", {}).get("source", {}).get("display_name", "Unknown Journal"),
-                "doi": work.get("doi", "").replace("https://doi.org/", ""),
-                "abstract": abstract,
-                "base_score": sim
-            })
+        refined.append(c)
 
-        candidates = fallback
+    refined = sorted(refined, key=lambda x: x["final_score"], reverse=True)
 
-    # -------- Preselect before embedding refinement --------
-    candidates = sorted(candidates, key=lambda x: x["base_score"], reverse=True)[:80]
-
-    # -------- Embedding refinement --------
-    for c in candidates:
-        emb = get_embedding(c["abstract"][:4000])
-        sim = cosine_similarity(emb, centroid)
-        c["final_score"] = c["base_score"] + 0.2 * sim
-
-    candidates = sorted(candidates, key=lambda x: x["final_score"], reverse=True)
-
-    return candidates[:50]
+    return refined[:50]
 
 # =========================
 # SCRIPT GENERATION
