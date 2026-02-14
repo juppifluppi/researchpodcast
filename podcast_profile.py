@@ -368,6 +368,13 @@ def generate_audio(script):
     filename = "episode_" + datetime.utcnow().strftime("%Y%m%d") + ".mp3"
     path = os.path.join(EPISODES_DIR, filename)
 
+    # -----------------------
+    # Clean markdown artifacts
+    # -----------------------
+    script = script.replace("**", "")
+    script = script.replace("---", "")
+    script = script.replace("\r", "")
+
     segments = []
     speaker = None
     buffer = ""
@@ -378,13 +385,16 @@ def generate_audio(script):
     for line in lines:
         stripped = line.strip()
 
-        # Detect chapter marker
+        if not stripped:
+            continue
+
+        # Detect chapter markers
         if stripped.startswith("=== PAPER:"):
             title = stripped.replace("=== PAPER:", "").replace("===", "").strip()
             chapter_titles.append(title)
             continue
 
-        # Case-insensitive speaker detection
+        # Detect moderator (case insensitive)
         if stripped.lower().startswith("moderator"):
             if buffer and speaker:
                 seg = process_block(speaker, buffer)
@@ -394,6 +404,7 @@ def generate_audio(script):
             speaker = "moderator"
             continue
 
+        # Detect author
         if stripped.lower().startswith("author"):
             if buffer and speaker:
                 seg = process_block(speaker, buffer)
@@ -406,17 +417,16 @@ def generate_audio(script):
         if speaker:
             buffer += " " + stripped
 
-    # Flush remaining buffer
+    # Flush final block
     if buffer and speaker:
         seg = process_block(speaker, buffer)
         if seg:
             segments.append(seg)
 
     if not segments:
-        print("WARNING: Script did not contain proper speaker markers.")
-        print("First 500 characters of script:")
-        print(script[:500])
-        raise ValueError("No speech segments generated.")
+        print("SCRIPT PREVIEW:")
+        print(script[:1000])
+        raise ValueError("No speech segments generated after normalization.")
 
     spoken = segments[0]
     for seg in segments[1:]:
@@ -433,7 +443,7 @@ def generate_audio(script):
 
     duration_seconds = int(len(final) / 1000)
 
-    # Chapter generation
+    # Generate chapters
     chapters = []
     if chapter_titles:
         step = duration_seconds // len(chapter_titles)
@@ -448,6 +458,7 @@ def generate_audio(script):
         json.dump({"version": "1.2.0", "chapters": chapters}, f, indent=2)
 
     return filename, duration_seconds, chapter_file
+
 
 
 # =========================
