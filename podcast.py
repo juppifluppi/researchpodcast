@@ -1,18 +1,18 @@
 import os
 import requests
-import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
 from openai import OpenAI
 import smtplib
 from email.message import EmailMessage
+from pydub import AudioSegment
+from datetime import datetime, timedelta
 
 # =========================
 # CONFIG
 # =========================
 
-TOPIC = "Lipid nanoparticles"
+TOPIC = "YOUR_TOPIC_HERE"
 MAX_PAPERS = 15
-TOP_SELECTION = 5
+TOP_SELECTION = 4
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 POSTEO_PASS = os.getenv("POSTEO_PASS")
@@ -20,28 +20,36 @@ POSTEO_EMAIL = os.getenv("POSTEO_EMAIL")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-
 # =========================
-# FETCH ARXIV PAPERS
+# FETCH PAPERS (CROSSREF)
 # =========================
 
-def fetch_arxiv():
-    query = f"http://export.arxiv.org/api/query?search_query=all:{TOPIC}&start=0&max_results={MAX_PAPERS}&sortBy=submittedDate&sortOrder=descending"
-    response = requests.get(query)
-    root = ET.fromstring(response.content)
+def fetch_crossref():
+    one_week_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
 
-    namespace = {"atom": "http://www.w3.org/2005/Atom"}
+    url = (
+        "https://api.crossref.org/works?"
+        f"query={TOPIC}"
+        f"&filter=from-pub-date:{one_week_ago}"
+        f"&rows={MAX_PAPERS}"
+        "&sort=published"
+        "&order=desc"
+    )
+
+    response = requests.get(url)
+    data = response.json()
 
     papers = []
 
-    for entry in root.findall("atom:entry", namespace):
-        title = entry.find("atom:title", namespace).text.strip()
-        summary = entry.find("atom:summary", namespace).text.strip()
-        link = entry.find("atom:id", namespace).text.strip()
+    for item in data["message"]["items"]:
+        title = item.get("title", ["No title"])[0]
+        abstract = item.get("abstract", "No abstract available.")
+        doi = item.get("DOI", "")
+        link = f"https://doi.org/{doi}" if doi else ""
 
         papers.append({
             "title": title,
-            "summary": summary,
+            "summary": abstract,
             "link": link
         })
 
@@ -58,22 +66,21 @@ def rank_papers(papers):
         paper_text += f"\nPaper {i+1}:\nTitle: {p['title']}\nAbstract: {p['summary']}\n"
 
     prompt = f"""
-You are a research analyst.
+Select the {TOP_SELECTION} most conceptually important papers in {TOPIC}.
 
-Given the following new papers in {TOPIC}, rank the top {TOP_SELECTION}
-based on:
-- novelty
-- likely impact
-- methodological rigor
-- broader implications
+Prioritize:
+- strong conclusions
+- forward-looking implications
+- conceptual impact
+- broad relevance
 
-Return only the numbers of the top papers in order.
+Return only the numbers.
 """
 
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "You are a precise academic evaluator."},
+            {"role": "system", "content": "You are a strict academic evaluator."},
             {"role": "user", "content": prompt + paper_text}
         ],
         temperature=0.3,
@@ -86,28 +93,36 @@ Return only the numbers of the top papers in order.
 
 
 # =========================
-# GENERATE PODCAST SCRIPT
+# GENERATE GERMAN SCRIPT (~20 min)
 # =========================
 
 def generate_script(selected_papers):
     paper_section = ""
     for p in selected_papers:
-        paper_section += f"\nTitle: {p['title']}\nAbstract: {p['summary']}\nLink: {p['link']}\n"
+        paper_section += f"\nTitel (Original): {p['title']}\nAbstract: {p['summary']}\nLink: {p['link']}\n"
 
     prompt = f"""
-Create a 30-minute research podcast script (~4500 words).
+Erstelle ein ca. 20-minütiges Forschungspodcast-Skript (~2800 Wörter).
 
-Topic: {TOPIC}
+Sprache: Deutsch
+Titel bleiben im englischen Original.
 
-Structure:
-- Intro overview of this week's research landscape
-- Deep dive into each paper
-- Connect themes across papers
-- Critical evaluation
-- Future outlook
+Fokus:
+- Zentrale Ergebnisse
+- Schlussfolgerungen
+- Bedeutung für das Feld
+- Zukunftsausblick
 
-Audience: expert researchers
-Style: analytical, precise, intellectually engaging (like The Economist tech briefing)
+Methodische Details nur sehr knapp.
+
+Struktur:
+1. Einstieg nach Musik
+2. Wochenüberblick
+3. Analyse der Papers
+4. Gemeinsame Trends
+5. Abschließender Ausblick
+
+Thema: {TOPIC}
 
 Papers:
 {paper_section}
@@ -116,7 +131,7 @@ Papers:
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "You are a high-level research podcast writer."},
+            {"role": "system", "content": "Du bist ein analytischer Wissenschaftsjournalist."},
             {"role": "user", "content": prompt}
         ],
         temperature=0.5,
@@ -126,25 +141,50 @@ Papers:
 
 
 # =========================
-# TEXT TO SPEECH
+# AUDIO MASTERING
 # =========================
 
+def normalize_audio(audio):
+    return audio.apply_gain(-20.0 - audio.dBFS)
+
+
 def generate_audio(script):
+    # Generate speech
     speech = client.audio.speech.create(
         model="gpt-4o-mini-tts",
         voice="alloy",
         input=script,
     )
 
-    audio_path = "podcast.mp3"
-    with open(audio_path, "wb") as f:
+    spoken_path = "spoken.mp3"
+    with open(spoken_path, "wb") as f:
         f.write(speech.content)
 
-    return audio_path
+    intro = AudioSegment.from_mp3("intro_music.mp3")
+    spoken = AudioSegment.from_mp3(spoken_path)
+
+    # Normalize spoken voice
+    spoken = normalize_audio(spoken)
+
+    # Normalize intro music slightly quieter
+    intro = normalize_audio(intro - 5)
+
+    intro = intro.fade_out(2000)
+    outro = intro.fade_in(2000)
+
+    combined = intro + spoken + outro
+
+    # Final normalization
+    combined = normalize_audio(combined)
+
+    final_path = "podcast.mp3"
+    combined.export(final_path, format="mp3")
+
+    return final_path
 
 
 # =========================
-# SEND EMAIL (POSTEO)
+# SEND EMAIL
 # =========================
 
 def send_email(script, audio_path):
@@ -152,16 +192,10 @@ def send_email(script, audio_path):
     msg["Subject"] = f"Weekly Research Podcast – {TOPIC}"
     msg["From"] = POSTEO_EMAIL
     msg["To"] = POSTEO_EMAIL
-    msg.set_content("Your weekly research podcast is attached.\n\nEnjoy.")
+    msg.set_content("Dein wöchentlicher Forschungspodcast ist angehängt.")
 
-    # Attach script
-    msg.add_attachment(
-        script,
-        subtype="plain",
-        filename="podcast.txt"
-    )
+    msg.add_attachment(script, subtype="plain", filename="podcast.txt")
 
-    # Attach audio
     with open(audio_path, "rb") as f:
         msg.add_attachment(
             f.read(),
@@ -180,7 +214,7 @@ def send_email(script, audio_path):
 # =========================
 
 def main():
-    papers = fetch_arxiv()
+    papers = fetch_crossref()
     ranked = rank_papers(papers)
     script = generate_script(ranked)
     audio = generate_audio(script)
