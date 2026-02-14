@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  run:
+  build:
     runs-on: ubuntu-latest
 
     permissions:
@@ -27,10 +27,16 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
+      - name: Remove old episodes (keep latest 20)
+        run: |
+          cd episodes
+          ls -1t *.mp3 | tail -n +21 | xargs -r rm --
+          ls -1t *.json | tail -n +21 | xargs -r rm --
+
       - name: Commit and Push
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add .
-          git commit -m "Add new episode" || echo "No changes"
+          git commit -m "Update podcast feed and episodes" || echo "No changes"
           git push
