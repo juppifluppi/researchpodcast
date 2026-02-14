@@ -23,7 +23,7 @@ jobs:
 
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
-      - run: python podcast_topic.py
+      - run: python podcast_profile.py
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
