@@ -1,5 +1,6 @@
 import os
 import requests
+import re
 from openai import OpenAI
 import smtplib
 from email.message import EmailMessage
@@ -10,9 +11,10 @@ from datetime import datetime, timedelta
 # CONFIG
 # =========================
 
-TOPIC = "lipid nanoparticle"
-MAX_PAPERS = 15
-TOP_SELECTION = 4
+TOPICS = ["TOPIC_ONE", "TOPIC_TWO"]  # Add or remove topics
+DAYS_BACK = 14
+MAX_PAPERS_PER_TOPIC = 12
+TOP_SELECTION_TOTAL = 6  # total papers discussed
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 POSTEO_PASS = os.getenv("POSTEO_PASS")
@@ -21,180 +23,218 @@ POSTEO_EMAIL = os.getenv("POSTEO_EMAIL")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # =========================
-# FETCH PAPERS (CROSSREF)
+# FETCH FROM CROSSREF (14 DAYS)
 # =========================
 
 def fetch_crossref():
-    one_week_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
-
-    url = (
-        "https://api.crossref.org/works?"
-        f"query={TOPIC}"
-        f"&filter=from-pub-date:{one_week_ago}"
-        f"&rows={MAX_PAPERS}"
-        "&sort=published"
-        "&order=desc"
-    )
-
-    response = requests.get(url)
-    data = response.json()
-
+    start_date = (datetime.utcnow() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
     papers = []
 
-    for item in data["message"]["items"]:
-        title = item.get("title", ["No title"])[0]
-        abstract = item.get("abstract", "No abstract available.")
-        doi = item.get("DOI", "")
-        link = f"https://doi.org/{doi}" if doi else ""
+    for topic in TOPICS:
+        url = (
+            "https://api.crossref.org/works?"
+            f"query={topic}"
+            f"&filter=from-pub-date:{start_date}"
+            f"&rows={MAX_PAPERS_PER_TOPIC}"
+            "&sort=published"
+            "&order=desc"
+        )
 
-        papers.append({
-            "title": title,
-            "summary": abstract,
-            "link": link
-        })
+        response = requests.get(url)
+        data = response.json()
+
+        for item in data.get("message", {}).get("items", []):
+            title = item.get("title", ["No title"])[0]
+            abstract = item.get("abstract", "")
+            doi = item.get("DOI", "")
+            link = f"https://doi.org/{doi}" if doi else ""
+
+            papers.append({
+                "topic": topic,
+                "title": title,
+                "summary": abstract,
+                "doi": doi,
+                "link": link
+            })
 
     return papers
 
 
 # =========================
-# RANK PAPERS
+# RANK PAPERS ROBUSTLY
 # =========================
 
 def rank_papers(papers):
-    paper_text = ""
+    text = ""
     for i, p in enumerate(papers):
-        paper_text += f"\nPaper {i+1}:\nTitle: {p['title']}\nAbstract: {p['summary']}\n"
+        text += f"""
+Paper {i+1}
+Topic: {p['topic']}
+Title: {p['title']}
+Abstract: {p['summary']}
+"""
 
     prompt = f"""
-Select the {TOP_SELECTION} most conceptually important papers in {TOPIC}.
+Select the {TOP_SELECTION_TOTAL} most important papers.
+
+Return ONLY numbers separated by commas.
+Example: 2,5,7,9
 
 Prioritize:
+- theoretical contribution
+- methodological innovation
+- conceptual novelty
 - strong conclusions
 - forward-looking implications
-- conceptual impact
-- broad relevance
-
-Return only the numbers.
 """
 
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": "You are a strict academic evaluator."},
-            {"role": "user", "content": prompt + paper_text}
+            {"role": "user", "content": prompt + text}
         ],
-        temperature=0.3,
+        temperature=0.2,
     )
 
-    ranked_numbers = response.choices[0].message.content
-    indices = [int(x) - 1 for x in ranked_numbers.split() if x.isdigit()]
+    content = response.choices[0].message.content
+    numbers = re.findall(r"\d+", content)
+    indices = [int(n) - 1 for n in numbers]
 
-    return [papers[i] for i in indices[:TOP_SELECTION]]
+    selected = []
+    for i in indices:
+        if 0 <= i < len(papers):
+            selected.append(papers[i])
+
+    return selected[:TOP_SELECTION_TOTAL]
 
 
 # =========================
-# GENERATE GERMAN SCRIPT (~20 min)
+# GENERATE 10K WORD SCRIPT
 # =========================
 
 def generate_script(selected_papers):
-    paper_section = ""
+    section = ""
     for p in selected_papers:
-        paper_section += f"\nTitel (Original): {p['title']}\nAbstract: {p['summary']}\nLink: {p['link']}\n"
+        section += f"""
+Topic: {p['topic']}
+Title (Original English): {p['title']}
+Abstract: {p['summary']}
+DOI: {p['doi']}
+Link: {p['link']}
+"""
 
     prompt = f"""
-Erstelle ein ca. 20-minütiges Forschungspodcast-Skript (~2800 Wörter).
+Erstelle ein ca. 10000 Wörter langes, hochgradig technisches Forschungspodcast-Skript.
 
-Sprache: Deutsch
-Titel bleiben im englischen Original.
+Sprache: Deutsch.
+Zielgruppe: Forschende mit Fachkenntnis.
+Keine Vereinfachungen.
+Keine Einleitung wie „Willkommen“.
+Keine Meta-Kommentare.
+Keine Erwähnung von Musik.
 
-Fokus:
-- Zentrale Ergebnisse
-- Schlussfolgerungen
-- Bedeutung für das Feld
-- Zukunftsausblick
+Anforderungen:
 
-Methodische Details nur sehr knapp.
+- Direkter Einstieg in inhaltliche Analyse.
+- Jedes Paper bekommt eine klar abgegrenzte Sektion.
+- Detaillierte Diskussion:
+    • Theoretischer Rahmen
+    • Methodik (nur wenn konzeptionell relevant)
+    • Zentrale Ergebnisse
+    • Kritische Bewertung
+    • Limitationen
+    • Konkrete Forschungsimplikationen
+- Präzise Terminologie.
+- Keine populärwissenschaftliche Sprache.
+- Abschließende Synthese übergreifender Trends.
 
-Struktur:
-1. Einstieg nach Musik
-2. Wochenüberblick
-3. Analyse der Papers
-4. Gemeinsame Trends
-5. Abschließender Ausblick
-
-Thema: {TOPIC}
+Diskutiere explizit jedes einzelne Paper.
 
 Papers:
-{paper_section}
+{section}
 """
 
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Du bist ein analytischer Wissenschaftsjournalist."},
+            {"role": "system", "content": "Du bist ein präziser wissenschaftlicher Analyst."},
             {"role": "user", "content": prompt}
         ],
-        temperature=0.5,
+        temperature=0.4,
+        max_tokens=14000
     )
 
     return response.choices[0].message.content
 
 
 # =========================
-# AUDIO MASTERING
+# AUDIO PROCESSING
 # =========================
 
-def normalize_audio(audio):
+def normalize(audio):
     return audio.apply_gain(-20.0 - audio.dBFS)
 
 
+def speed_up(audio, speed=1.18):
+    return audio._spawn(
+        audio.raw_data,
+        overrides={"frame_rate": int(audio.frame_rate * speed)}
+    ).set_frame_rate(audio.frame_rate)
+
+
 def generate_audio(script):
-    # Generate speech
     speech = client.audio.speech.create(
         model="gpt-4o-mini-tts",
         voice="alloy",
         input=script,
     )
 
-    spoken_path = "spoken.mp3"
-    with open(spoken_path, "wb") as f:
+    with open("spoken.mp3", "wb") as f:
         f.write(speech.content)
 
     intro = AudioSegment.from_mp3("intro_music.mp3")
-    spoken = AudioSegment.from_mp3(spoken_path)
+    spoken = AudioSegment.from_mp3("spoken.mp3")
 
-    # Normalize spoken voice
-    spoken = normalize_audio(spoken)
+    spoken = normalize(spoken)
+    spoken = speed_up(spoken)
 
-    # Normalize intro music slightly quieter
-    intro = normalize_audio(intro - 5)
+    intro = normalize(intro - 5)
+    outro = intro
 
-    intro = intro.fade_out(2000)
-    outro = intro.fade_in(2000)
+    combined = intro.fade_out(1500) + spoken + outro.fade_in(1500)
+    combined = normalize(combined)
 
-    combined = intro + spoken + outro
-
-    # Final normalization
-    combined = normalize_audio(combined)
-
-    final_path = "podcast.mp3"
-    combined.export(final_path, format="mp3")
-
-    return final_path
+    combined.export("podcast.mp3", format="mp3")
+    return "podcast.mp3"
 
 
 # =========================
-# SEND EMAIL
+# EMAIL
 # =========================
 
-def send_email(script, audio_path):
+def send_email(script, audio_path, selected_papers):
+    references = "\n\n==============================\n"
+    references += "REFERENZEN DER BESPROCHENEN PAPER\n"
+    references += "==============================\n\n"
+
+    for i, p in enumerate(selected_papers, 1):
+        references += f"{i}. {p['title']}\n"
+        if p.get("doi"):
+            references += f"   DOI: {p['doi']}\n"
+        if p.get("link"):
+            references += f"   Link: {p['link']}\n"
+        references += "\n"
+
+    full_text = script + references
+
     msg = EmailMessage()
-    msg["Subject"] = f"Weekly Research Podcast – {TOPIC}"
+    msg["Subject"] = "Weekly Research Podcast"
     msg["From"] = POSTEO_EMAIL
     msg["To"] = POSTEO_EMAIL
-    msg.set_content("Dein wöchentlicher Forschungspodcast ist angehängt.")
+    msg.set_content("Der neue Forschungspodcast ist angehängt.")
 
-    msg.add_attachment(script, subtype="plain", filename="podcast.txt")
+    msg.add_attachment(full_text, subtype="plain", filename="podcast.txt")
 
     with open(audio_path, "rb") as f:
         msg.add_attachment(
@@ -215,10 +255,18 @@ def send_email(script, audio_path):
 
 def main():
     papers = fetch_crossref()
+    if not papers:
+        print("No papers found.")
+        return
+
     ranked = rank_papers(papers)
+    if not ranked:
+        print("Ranking failed.")
+        return
+
     script = generate_script(ranked)
     audio = generate_audio(script)
-    send_email(script, audio)
+    send_email(script, audio, ranked)
 
 
 if __name__ == "__main__":
