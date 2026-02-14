@@ -25,7 +25,6 @@ TRACK_AUTHORS = []
 
 DAYS_BACK = 7
 MAX_PAPERS_PER_TOPIC = 12
-MAX_PAPERS_PER_AUTHOR = 6
 TOP_SELECTION_TOTAL = 6
 MAX_FEED_ITEMS = 20
 
@@ -33,7 +32,6 @@ BASE_URL = "https://juppifluppi.github.io/researchpodcast"
 EPISODES_DIR = "episodes"
 
 PODCAST_TITLE = "Research Updates"
-PODCAST_DESCRIPTION = "AI-generated deep dive into recent scientific publications."
 PODCAST_LANGUAGE = "en-us"
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -112,7 +110,7 @@ def fetch_crossref():
     return list(unique.values())
 
 # =========================
-# SCRIPT GENERATION (DOUBLE LENGTH)
+# SCRIPT GENERATION
 # =========================
 
 def generate_script(selected_papers):
@@ -121,27 +119,19 @@ def generate_script(selected_papers):
     for p in selected_papers:
         section += f"\n### PAPER_START: {p['title']}\n"
 
-    prompt = f"""
+    prompt = """
 Create a long-form, in-depth scientific podcast conversation in dialogue format.
 
 Language: English.
-Moderator is analytical, occasionally skeptical.
-Author is reflective and technically detailed.
+Moderator analytical and critical.
+Author technically detailed.
 
-The episode should be substantially long and detailed.
 Discuss:
-
-- Theoretical background
-- Experimental design in depth
-- Methodological robustness
-- Statistical considerations
-- Limitations
-- Comparison across papers
-- Field-wide implications
-- Future research directions
-- Translational potential
-
-Each paper discussion should be extensive.
+- theory
+- methodology
+- limitations
+- implications
+- cross-paper trends
 
 Format:
 
@@ -158,17 +148,59 @@ Each paper must begin exactly with:
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "You generate a long-form, high-level scientific discussion."},
+            {"role": "system", "content": "You generate a long-form scientific podcast dialogue."},
             {"role": "user", "content": prompt + section}
         ],
         temperature=0.8,
-        max_tokens=14000  # doubled
+        max_tokens=14000
     )
 
     return response.choices[0].message.content
 
 # =========================
-# AUDIO
+# EPISODE TITLE + SHOW NOTES
+# =========================
+
+def generate_episode_metadata(script, papers):
+
+    paper_list = "\n".join([
+        f"- {p['title']} ({p['journal']}) DOI: {p['doi']}"
+        for p in papers
+    ])
+
+    prompt = f"""
+Generate:
+
+1) A compelling but professional podcast episode title (max 15 words).
+2) A short episode summary (4–6 sentences).
+3) Structured show notes including:
+   - Bullet list of discussed papers
+   - For each paper: one-sentence technical highlight
+
+Papers:
+{paper_list}
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": "You generate professional podcast metadata."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.7,
+        max_tokens=800
+    )
+
+    text = response.choices[0].message.content
+
+    parts = text.split("\n", 1)
+    title = parts[0].strip()
+    description = parts[1].strip() if len(parts) > 1 else text
+
+    return title, description
+
+# =========================
+# AUDIO PROCESSING
 # =========================
 
 def process_block(speaker, text):
@@ -246,9 +278,6 @@ def generate_audio(script):
 
     spoken = sum(segments)
 
-    if len(spoken) < 5000:
-        raise ValueError("No speech generated.")
-
     spoken = speed_adjust(normalize(spoken), speed=1.10)
 
     spoken = compress_dynamic_range(
@@ -274,10 +303,10 @@ def generate_audio(script):
     return filename, duration_seconds
 
 # =========================
-# RSS
+# RSS GENERATION
 # =========================
 
-def update_rss(filename, duration_seconds):
+def update_rss(filename, duration_seconds, episode_title, description):
 
     feed_path = "feed.xml"
     episode_url = f"{BASE_URL}/episodes/{filename}"
@@ -289,7 +318,6 @@ def update_rss(filename, duration_seconds):
 
         ET.SubElement(channel, "title").text = PODCAST_TITLE
         ET.SubElement(channel, "link").text = BASE_URL
-        ET.SubElement(channel, "description").text = PODCAST_DESCRIPTION
         ET.SubElement(channel, "language").text = PODCAST_LANGUAGE
     else:
         tree = ET.parse(feed_path)
@@ -297,7 +325,8 @@ def update_rss(filename, duration_seconds):
         channel = rss.find("channel")
 
     item = ET.Element("item")
-    ET.SubElement(item, "title").text = filename.replace(".mp3", "")
+    ET.SubElement(item, "title").text = episode_title
+    ET.SubElement(item, "description").text = description
     ET.SubElement(item, "pubDate").text = pub_date
     ET.SubElement(item, "guid").text = episode_url
 
@@ -320,11 +349,12 @@ def update_rss(filename, duration_seconds):
 # =========================
 
 def main():
-    papers = fetch_crossref()
-    script = generate_script(papers[:TOP_SELECTION_TOTAL])
+    papers = fetch_crossref()[:TOP_SELECTION_TOTAL]
+    script = generate_script(papers)
     filename, duration = generate_audio(script)
-    update_rss(filename, duration)
-    print("Episode generated:", filename, "Duration:", duration)
+    episode_title, description = generate_episode_metadata(script, papers)
+    update_rss(filename, duration, episode_title, description)
+    print("Episode generated:", episode_title)
 
 if __name__ == "__main__":
     main()
