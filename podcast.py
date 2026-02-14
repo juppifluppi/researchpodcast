@@ -2,8 +2,6 @@ import os
 import requests
 import re
 from openai import OpenAI
-import smtplib
-from email.message import EmailMessage
 from pydub import AudioSegment
 from datetime import datetime, timedelta
 
@@ -11,19 +9,20 @@ from datetime import datetime, timedelta
 # CONFIG
 # =========================
 
-TOPICS = ["Lipid nanoparticle", "bioconjugation"]  # Add or remove topics
+TOPICS = ["TOPIC_ONE", "TOPIC_TWO"]  # customize
 DAYS_BACK = 14
 MAX_PAPERS_PER_TOPIC = 12
-TOP_SELECTION_TOTAL = 6  # total papers discussed
+TOP_SELECTION_TOTAL = 6
+
+SITE_URL = "https://juppifluppi.github.io"
+EPISODES_DIR = "episodes"
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-POSTEO_PASS = os.getenv("POSTEO_PASS")
-POSTEO_EMAIL = os.getenv("POSTEO_EMAIL")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # =========================
-# FETCH FROM CROSSREF (14 DAYS)
+# FETCH CROSSREF
 # =========================
 
 def fetch_crossref():
@@ -47,6 +46,8 @@ def fetch_crossref():
             title = item.get("title", ["No title"])[0]
             abstract = item.get("abstract", "")
             doi = item.get("DOI", "")
+            journal = item.get("container-title", ["Unknown Journal"])[0]
+            citations = item.get("is-referenced-by-count", 0)
             link = f"https://doi.org/{doi}" if doi else ""
 
             papers.append({
@@ -54,14 +55,15 @@ def fetch_crossref():
                 "title": title,
                 "summary": abstract,
                 "doi": doi,
+                "journal": journal,
+                "citations": citations,
                 "link": link
             })
 
     return papers
 
-
 # =========================
-# RANK PAPERS ROBUSTLY
+# RANK PAPERS
 # =========================
 
 def rank_papers(papers):
@@ -71,6 +73,8 @@ def rank_papers(papers):
 Paper {i+1}
 Topic: {p['topic']}
 Title: {p['title']}
+Journal: {p['journal']}
+Citations: {p['citations']}
 Abstract: {p['summary']}
 """
 
@@ -78,14 +82,13 @@ Abstract: {p['summary']}
 Select the {TOP_SELECTION_TOTAL} most important papers.
 
 Return ONLY numbers separated by commas.
-Example: 2,5,7,9
 
 Prioritize:
 - theoretical contribution
 - methodological innovation
 - conceptual novelty
-- strong conclusions
 - forward-looking implications
+- citation count (as signal, not sole criterion)
 """
 
     response = client.chat.completions.create(
@@ -97,8 +100,7 @@ Prioritize:
         temperature=0.2,
     )
 
-    content = response.choices[0].message.content
-    numbers = re.findall(r"\d+", content)
+    numbers = re.findall(r"\d+", response.choices[0].message.content)
     indices = [int(n) - 1 for n in numbers]
 
     selected = []
@@ -108,9 +110,8 @@ Prioritize:
 
     return selected[:TOP_SELECTION_TOTAL]
 
-
 # =========================
-# GENERATE 10K WORD SCRIPT
+# GENERATE SCRIPT (~6000 WORDS)
 # =========================
 
 def generate_script(selected_papers):
@@ -119,37 +120,36 @@ def generate_script(selected_papers):
         section += f"""
 Topic: {p['topic']}
 Title (Original English): {p['title']}
+Journal: {p['journal']}
+Citations: {p['citations']}
 Abstract: {p['summary']}
 DOI: {p['doi']}
-Link: {p['link']}
 """
 
     prompt = f"""
-Erstelle ein ca. 10000 Wörter langes, hochgradig technisches Forschungspodcast-Skript.
+Erstelle ein ca. 6000 Wörter langes technisches Forschungspodcast-Skript.
 
 Sprache: Deutsch.
 Zielgruppe: Forschende mit Fachkenntnis.
+Keine Einleitungen.
+Keine Musik-Erwähnung.
 Keine Vereinfachungen.
-Keine Einleitung wie „Willkommen“.
-Keine Meta-Kommentare.
-Keine Erwähnung von Musik.
 
-Anforderungen:
+Struktur:
 
-- Direkter Einstieg in inhaltliche Analyse.
-- Jedes Paper bekommt eine klar abgegrenzte Sektion.
-- Detaillierte Diskussion:
+- Direkter Einstieg in analytische Diskussion.
+- Jedes Paper erhält eine klar abgegrenzte Sektion.
+- Pro Paper:
     • Theoretischer Rahmen
-    • Methodik (nur wenn konzeptionell relevant)
+    • Konzeptionell relevante Methodik
     • Zentrale Ergebnisse
-    • Kritische Bewertung
+    • Kritische Einordnung
     • Limitationen
     • Konkrete Forschungsimplikationen
-- Präzise Terminologie.
-- Keine populärwissenschaftliche Sprache.
-- Abschließende Synthese übergreifender Trends.
-
-Diskutiere explizit jedes einzelne Paper.
+- Abschließend:
+    • Synthese übergreifender Trends
+    • Identifikation emergenter Forschungscluster
+    • Bewertung möglicher Paradigmenverschiebungen
 
 Papers:
 {section}
@@ -162,11 +162,10 @@ Papers:
             {"role": "user", "content": prompt}
         ],
         temperature=0.4,
-        max_tokens=14000
+        max_tokens=9000
     )
 
     return response.choices[0].message.content
-
 
 # =========================
 # AUDIO PROCESSING
@@ -175,13 +174,11 @@ Papers:
 def normalize(audio):
     return audio.apply_gain(-20.0 - audio.dBFS)
 
-
 def speed_up(audio, speed=1.18):
     return audio._spawn(
         audio.raw_data,
         overrides={"frame_rate": int(audio.frame_rate * speed)}
     ).set_frame_rate(audio.frame_rate)
-
 
 def generate_audio(script):
     speech = client.audio.speech.create(
@@ -190,64 +187,64 @@ def generate_audio(script):
         input=script,
     )
 
-    with open("spoken.mp3", "wb") as f:
+    os.makedirs(EPISODES_DIR, exist_ok=True)
+
+    filename = f"episode_{datetime.utcnow().strftime('%Y%m%d')}.mp3"
+    spoken_path = os.path.join(EPISODES_DIR, "spoken.mp3")
+
+    with open(spoken_path, "wb") as f:
         f.write(speech.content)
 
     intro = AudioSegment.from_mp3("intro_music.mp3")
-    spoken = AudioSegment.from_mp3("spoken.mp3")
+    spoken = AudioSegment.from_mp3(spoken_path)
 
-    spoken = normalize(spoken)
-    spoken = speed_up(spoken)
-
+    spoken = speed_up(normalize(spoken))
     intro = normalize(intro - 5)
     outro = intro
 
     combined = intro.fade_out(1500) + spoken + outro.fade_in(1500)
     combined = normalize(combined)
 
-    combined.export("podcast.mp3", format="mp3")
-    return "podcast.mp3"
+    final_path = os.path.join(EPISODES_DIR, filename)
+    combined.export(final_path, format="mp3")
 
+    return filename
 
 # =========================
-# EMAIL
+# RSS UPDATE
 # =========================
 
-def send_email(script, audio_path, selected_papers):
-    references = "\n\n==============================\n"
-    references += "REFERENZEN DER BESPROCHENEN PAPER\n"
-    references += "==============================\n\n"
+def update_rss(filename):
+    feed_path = "feed.xml"
+    episode_url = f"{SITE_URL}/episodes/{filename}"
+    pub_date = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
 
-    for i, p in enumerate(selected_papers, 1):
-        references += f"{i}. {p['title']}\n"
-        if p.get("doi"):
-            references += f"   DOI: {p['doi']}\n"
-        if p.get("link"):
-            references += f"   Link: {p['link']}\n"
-        references += "\n"
+    item = f"""
+    <item>
+        <title>Research Update {filename}</title>
+        <enclosure url="{episode_url}" type="audio/mpeg"/>
+        <pubDate>{pub_date}</pubDate>
+    </item>
+    """
 
-    full_text = script + references
+    if os.path.exists(feed_path):
+        with open(feed_path, "r") as f:
+            content = f.read()
+        content = content.replace("</channel>", item + "\n</channel>")
+    else:
+        content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+<channel>
+<title>Private Research Podcast</title>
+<link>{SITE_URL}</link>
+<description>Automated Research Monitoring</description>
+{item}
+</channel>
+</rss>
+"""
 
-    msg = EmailMessage()
-    msg["Subject"] = "Weekly Research Podcast"
-    msg["From"] = POSTEO_EMAIL
-    msg["To"] = POSTEO_EMAIL
-    msg.set_content("Der neue Forschungspodcast ist angehängt.")
-
-    msg.add_attachment(full_text, subtype="plain", filename="podcast.txt")
-
-    with open(audio_path, "rb") as f:
-        msg.add_attachment(
-            f.read(),
-            maintype="audio",
-            subtype="mpeg",
-            filename="podcast.mp3"
-        )
-
-    with smtplib.SMTP_SSL("posteo.de", 465) as smtp:
-        smtp.login(POSTEO_EMAIL, POSTEO_PASS)
-        smtp.send_message(msg)
-
+    with open(feed_path, "w") as f:
+        f.write(content)
 
 # =========================
 # MAIN
@@ -260,14 +257,9 @@ def main():
         return
 
     ranked = rank_papers(papers)
-    if not ranked:
-        print("Ranking failed.")
-        return
-
     script = generate_script(ranked)
-    audio = generate_audio(script)
-    send_email(script, audio, ranked)
-
+    filename = generate_audio(script)
+    update_rss(filename)
 
 if __name__ == "__main__":
     main()
