@@ -26,7 +26,7 @@ ALLOWED_FIELDS = {
     "Biomedical Engineering"
 }
 
-DAYS_BACK = 30
+DAYS_BACK = 7
 TARGET_DURATION_MINUTES = 30
 BASE_MINUTES_PER_PAPER = 3
 MAX_FEED_ITEMS = 10
@@ -104,7 +104,7 @@ def build_author_profile():
 
     for author_id in AUTHOR_IDS:
         works = requests.get(
-            f"https://api.openalex.org/works?filter=author.id:{author_id}&sort=publication_date:desc&per_page=20"
+            f"https://api.openalex.org/works?filter=author.id:{author_id}&sort=publication_date:desc&per_page=10"
         ).json()
 
         for work in works.get("results", []):
@@ -155,13 +155,13 @@ def fetch_recent_papers():
     # Step 1: Retrieve larger pool
     # -------------------------------
 
-    pool_days = max(DAYS_BACK, 30)
+    pool_days = max(DAYS_BACK, 7)
     start_date = (datetime.utcnow() - timedelta(days=pool_days)).strftime("%Y-%m-%d")
 
     params = {
         "filter": f"publication_date:>{start_date}",
         "sort": "publication_date:desc",
-        "per_page": 200
+        "per_page": 100
      }
 
     response = requests.get("https://api.openalex.org/works", params=params)
