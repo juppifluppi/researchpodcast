@@ -1,7 +1,6 @@
 import os
 import requests
 import re
-import html
 import random
 import numpy as np
 import xml.etree.ElementTree as ET
@@ -14,9 +13,11 @@ from datetime import datetime, timedelta
 # CONFIG
 # =========================
 
-TARGET_AUTHORS = [
-    "Lorenz Meinel",
-    "Tessa Lühmann"
+# 🔒 Replace these with the REAL OpenAlex author IDs
+AUTHOR_IDS = [
+    "https://openalex.org/a5001051737",  # Lorenz Meinel
+    "https://openalex.org/a5000977163"   # Tessa Lühmann
+    "https://openalex.org/a5018917714"   # Josef Kehrein    
 ]
 
 DAYS_BACK = 7
@@ -36,7 +37,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # =========================
-# UTILITIES
+# AUDIO UTILITIES
 # =========================
 
 def normalize(audio):
@@ -54,16 +55,8 @@ def apply_eq_moderator(audio):
 def apply_eq_author(audio):
     return low_pass_filter(high_pass_filter(audio, 80), 7000) - 1
 
-def openalex_abstract_to_text(inv_index):
-    words = []
-    for word, positions in inv_index.items():
-        for pos in positions:
-            words.append((pos, word))
-    words.sort()
-    return " ".join([w for _, w in words])
-
 # =========================
-# EMBEDDING
+# EMBEDDINGS
 # =========================
 
 def get_embedding(text):
@@ -79,26 +72,29 @@ def cosine_similarity(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 # =========================
-# AUTHOR CONCEPT EXTRACTION
+# OPENALEX UTILITIES
+# =========================
+
+def openalex_abstract_to_text(inv_index):
+    words = []
+    for word, positions in inv_index.items():
+        for pos in positions:
+            words.append((pos, word))
+    words.sort()
+    return " ".join([w for _, w in words])
+
+# =========================
+# EXTRACT DOMINANT CONCEPTS
 # =========================
 
 def extract_author_concepts():
 
     concept_counter = {}
 
-    for name in TARGET_AUTHORS:
-
-        author_search = requests.get(
-            "https://api.openalex.org/authors?search=" + name
-        ).json()
-
-        if not author_search.get("results"):
-            continue
-
-        author_id = author_search["results"][0]["id"]
+    for author_id in AUTHOR_IDS:
 
         works = requests.get(
-            "https://api.openalex.org/works?filter=author.id:" + author_id + "&per_page=50"
+            f"https://api.openalex.org/works?filter=author.id:{author_id}&per_page=50"
         ).json()
 
         for work in works.get("results", []):
@@ -111,18 +107,21 @@ def extract_author_concepts():
 
     sorted_concepts = sorted(concept_counter.items(), key=lambda x: x[1], reverse=True)
 
+    # Use top 3 specific subfield concepts
     return [cid for cid, _ in sorted_concepts[:3]]
 
 # =========================
-# PAPER SELECTION
+# FETCH AND RANK PAPERS
 # =========================
 
 def fetch_papers():
 
     start_date = (datetime.utcnow() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
+
     concept_ids = extract_author_concepts()
 
     if not concept_ids:
+        print("No dominant concepts found.")
         return []
 
     concept_filter = "|".join([f"concepts.id:{cid}" for cid in concept_ids])
@@ -135,20 +134,12 @@ def fetch_papers():
 
     recent = requests.get(query).json()
 
+    # Build author embedding centroid
     author_abstracts = []
 
-    for name in TARGET_AUTHORS:
-        author_search = requests.get(
-            "https://api.openalex.org/authors?search=" + name
-        ).json()
-
-        if not author_search.get("results"):
-            continue
-
-        author_id = author_search["results"][0]["id"]
-
+    for author_id in AUTHOR_IDS:
         works = requests.get(
-            "https://api.openalex.org/works?filter=author.id:" + author_id + "&per_page=40"
+            f"https://api.openalex.org/works?filter=author.id:{author_id}&per_page=40"
         ).json()
 
         for work in works.get("results", []):
@@ -158,6 +149,7 @@ def fetch_papers():
                 )
 
     if not author_abstracts:
+        print("No author abstracts found.")
         return []
 
     centroid = np.mean(
@@ -206,9 +198,9 @@ def fetch_papers():
 
 def generate_script(selected_papers):
 
-    number_of_papers = len(selected_papers)
+    num_papers = len(selected_papers)
     desired_minutes = max(TARGET_DURATION_MINUTES,
-                          number_of_papers * BASE_MINUTES_PER_PAPER)
+                          num_papers * BASE_MINUTES_PER_PAPER)
 
     approx_tokens = int(desired_minutes * 180)
     max_tokens = min(9000, approx_tokens)
@@ -218,12 +210,12 @@ def generate_script(selected_papers):
         section += f"\n### PAPER_START: {p['title']}\n"
 
     prompt = (
-        "Create an intelligent scientific podcast dialogue.\n\n"
+        "Create a high-level scientific podcast dialogue.\n\n"
         "Moderator slightly contrarian.\n"
-        "Include disagreement moments and emotional nuance.\n"
-        "Discuss only listed papers.\n"
-        "No statistical deep dives.\n\n"
-        "Format:\n\n"
+        "Include controlled disagreement.\n"
+        "No statistical deep dives.\n"
+        "Discuss only listed papers.\n\n"
+        "Format strictly:\n\n"
         "### PAPER_START: <Title>\n\n"
         "MODERATOR:\nText\n\n"
         "AUTHOR:\nText\n"
@@ -232,7 +224,7 @@ def generate_script(selected_papers):
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Generate natural dialogue."},
+            {"role": "system", "content": "Generate natural academic dialogue."},
             {"role": "user", "content": prompt + section}
         ],
         temperature=0.85,
@@ -246,6 +238,7 @@ def generate_script(selected_papers):
 # =========================
 
 def process_block(speaker, text):
+
     voice = "alloy" if "moderator" in speaker else "verse"
     eq = apply_eq_moderator if "moderator" in speaker else apply_eq_author
 
@@ -314,7 +307,7 @@ def main():
         print("No aligned papers found.")
         return
 
-    # Dynamic number of papers based on target duration
+    # Dynamic number of papers
     num_papers = max(3, min(8, TARGET_DURATION_MINUTES // BASE_MINUTES_PER_PAPER))
     selected = ranked[:num_papers]
 
