@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 # CONFIG
 # =========================
 
-TOPICS = ["TOPIC_ONE", "TOPIC_TWO"]  # Customize
+TOPICS = ["lipid nanoparticle", "bioconjugation"]  # Customize
 DAYS_BACK = 14
 MAX_PAPERS_PER_TOPIC = 12
 TOP_SELECTION_TOTAL = 6
@@ -20,8 +20,8 @@ MAX_FEED_ITEMS = 20
 BASE_URL = "https://juppifluppi.github.io/researchpodcast"
 EPISODES_DIR = "episodes"
 
-PODCAST_TITLE = "Research Intelligence Briefing"
-PODCAST_AUTHOR = "Research Intelligence System"
+PODCAST_TITLE = "Jupps Paper Update"
+PODCAST_AUTHOR = "Jupp"
 PODCAST_DESCRIPTION = "Automated deep-dive analysis of recent academic publications."
 PODCAST_LANGUAGE = "de-de"
 PODCAST_CATEGORY = "Science"
