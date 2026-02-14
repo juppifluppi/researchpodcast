@@ -136,7 +136,7 @@ def fetch_recent_papers():
 
     query = (
         "https://api.openalex.org/works?"
-        f"filter=from_publication_date:{start_date},primary_topic.domain.id:https://openalex.org/domains/4"
+        f"filter=from_publication_date:{start_date}"
         "&per_page=200"
     )
 
@@ -169,6 +169,9 @@ def fetch_recent_papers():
         if work.get("primary_location") and work["primary_location"].get("source"):
             journal = work["primary_location"]["source"]["display_name"]
 
+        if journal not in author_journals:
+            continue
+        
         if journal in author_journals:
             final_score *= 1.2
 
