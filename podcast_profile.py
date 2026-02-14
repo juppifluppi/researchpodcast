@@ -13,7 +13,6 @@ from pydub.effects import compress_dynamic_range, high_pass_filter, low_pass_fil
 
 AUTHOR_IDS = [
     "https://openalex.org/A5001051737",
-    "https://openalex.org/A5000977163",
     "https://openalex.org/A5018917714"
 ]
 
@@ -91,7 +90,7 @@ def extract_author_concepts():
 
     for author_id in AUTHOR_IDS:
         works = requests.get(
-            f"https://api.openalex.org/works?filter=author.id:{author_id}&sort=publication_date:desc&per_page=20"
+            f"https://api.openalex.org/works?filter=author.id:{author_id}&sort=publication_date:desc&per_page=10"
         ).json()
 
         for work in works.get("results", []):
