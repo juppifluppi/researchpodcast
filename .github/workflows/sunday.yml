@@ -1,0 +1,29 @@
+name: Weekly Research Podcast
+
+on:
+  schedule:
+    - cron: "0 7 * * 0"   # Sunday 07:00 UTC
+  workflow_dispatch:     # allows manual run
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Script
+        run: python weekly_podcast.py
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          POSTEO_PASS: ${{ secrets.POSTEO_PASS }}
+          POSTEO_EMAIL: ${{ secrets.POSTEO_EMAIL }}
