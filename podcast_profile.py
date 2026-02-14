@@ -68,7 +68,7 @@ def apply_eq_author(audio):
     return low_pass_filter(high_pass_filter(audio, 80), 7000) - 1
 
 # =========================
-# EMBEDDING HELPERS
+# EMBEDDING
 # =========================
 
 def get_embedding(text):
@@ -96,18 +96,17 @@ def openalex_abstract_to_text(inv_index):
     return " ".join([w for _, w in words])
 
 # =========================
-# PAPER SELECTION (OpenAlex + Embeddings)
+# PAPER SELECTION
 # =========================
 
 def fetch_crossref():
 
     start_date = (datetime.utcnow() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
 
-    # ---- STEP 1: Collect author abstracts ----
+    # ---- Build author embedding centroid ----
     author_abstracts = []
 
     for name in TARGET_AUTHORS:
-
         author_search = requests.get(
             "https://api.openalex.org/authors?search=" + name
         ).json()
@@ -130,14 +129,10 @@ def fetch_crossref():
     if not author_abstracts:
         return []
 
-    # ---- STEP 2: Build centroid embedding ----
-    embeddings = []
-    for abs_text in author_abstracts[:30]:
-        embeddings.append(get_embedding(abs_text[:4000]))
-
+    embeddings = [get_embedding(a[:4000]) for a in author_abstracts[:30]]
     centroid = np.mean(embeddings, axis=0)
 
-    # ---- STEP 3: Fetch recent domain-filtered works ----
+    # ---- Fetch recent works (domain-filtered) ----
     domain_query = (
         "https://api.openalex.org/works?"
         f"filter=from_publication_date:{start_date},"
@@ -150,7 +145,6 @@ def fetch_crossref():
     candidates = []
 
     for work in recent.get("results", []):
-
         if not work.get("abstract_inverted_index"):
             continue
 
@@ -242,9 +236,8 @@ def generate_script(selected_papers):
         "CONVERSATIONAL DYNAMICS:\n"
         "- Moderator occasionally challenges assumptions.\n"
         "- Include controlled disagreement moments.\n"
-        "- Allow subtle emotional nuance (skepticism, curiosity, surprise).\n"
-        "- Include occasional sophisticated analogies.\n"
-        "- Keep tone intelligent and realistic.\n\n"
+        "- Allow subtle emotional nuance.\n"
+        "- Include occasional sophisticated analogies.\n\n"
         "CONTENT FOCUS:\n"
         "- Core innovation\n"
         "- Mechanism\n"
@@ -263,7 +256,7 @@ def generate_script(selected_papers):
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Generate natural, nuanced, intellectually rigorous dialogue."},
+            {"role": "system", "content": "Generate natural, nuanced dialogue."},
             {"role": "user", "content": prompt + section}
         ],
         temperature=0.9,
@@ -273,26 +266,99 @@ def generate_script(selected_papers):
     return response.choices[0].message.content
 
 # =========================
-# (Metadata, audio, RSS, main remain EXACTLY as in your original script)
+# AUDIO
+# =========================
+
+def process_block(speaker, text):
+    segments = []
+    voice = "alloy" if "moderator" in speaker else "verse"
+    pan = -0.08 if "moderator" in speaker else 0.08
+    eq_func = apply_eq_moderator if "moderator" in speaker else apply_eq_author
+
+    words = text.split()
+    chunks = [" ".join(words[i:i+650]) for i in range(0, len(words), 650)]
+
+    for chunk in chunks:
+        speech = client.audio.speech.create(
+            model="gpt-4o-mini-tts",
+            voice=voice,
+            input=chunk
+        )
+
+        temp_path = os.path.join(EPISODES_DIR, "temp.mp3")
+        with open(temp_path, "wb") as f:
+            f.write(speech.content)
+
+        segment = AudioSegment.from_mp3(temp_path)
+        segment = eq_func(segment).pan(pan)
+
+        segments.append(segment)
+        segments.append(random_pause())
+
+    return segments
+
+
+def generate_audio(script):
+
+    os.makedirs(EPISODES_DIR, exist_ok=True)
+    filename = "episode_" + datetime.utcnow().strftime("%Y%m%d") + ".mp3"
+    final_path = os.path.join(EPISODES_DIR, filename)
+
+    segments = []
+    current_speaker = None
+    buffer = ""
+
+    for line in script.split("\n"):
+        line = line.strip()
+
+        if line.startswith("### PAPER_START"):
+            if buffer:
+                segments.extend(process_block(current_speaker, buffer))
+                buffer = ""
+            segments.append(random_long_pause())
+            continue
+
+        speaker_match = re.match(r"^(MODERATOR|AUTHOR)\s*[:\-]?$", line)
+
+        if speaker_match:
+            if buffer:
+                segments.extend(process_block(current_speaker, buffer))
+                buffer = ""
+            current_speaker = speaker_match.group(1).lower()
+            continue
+
+        if current_speaker:
+            buffer += " " + line
+
+    if buffer:
+        segments.extend(process_block(current_speaker, buffer))
+
+    spoken = sum(segments)
+    spoken = speed_adjust(normalize(spoken), speed=1.10)
+    spoken = compress_dynamic_range(spoken, threshold=-20.0, ratio=2.0)
+
+    intro = normalize(AudioSegment.from_mp3("intro_music.mp3")).fade_out(2000)
+    outro = normalize(AudioSegment.from_mp3("intro_music.mp3")).fade_in(2000)
+
+    final_audio = normalize(intro + spoken + outro)
+    final_audio.export(final_path, format="mp3")
+
+    return filename, int(len(final_audio) / 1000)
+
+# =========================
+# MAIN
 # =========================
 
 def main():
     papers = fetch_crossref()
+    if not papers:
+        print("No aligned papers found.")
+        return
+
     script = generate_script(papers)
     filename, duration = generate_audio(script)
 
-    if os.path.exists("feed.xml"):
-        tree = ET.parse("feed.xml")
-        channel = tree.getroot().find("channel")
-        episode_number = len(channel.findall("item")) + 1
-    else:
-        episode_number = 1
-
-    title, description = generate_episode_metadata(papers, episode_number)
-    update_rss(filename, duration, title, description, episode_number)
-
-    print("Episode generated:", title)
-
+    print("Episode generated:", filename, "Duration:", duration)
 
 if __name__ == "__main__":
     main()
