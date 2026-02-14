@@ -20,16 +20,13 @@ TOPICS = [
     "polyoxazoline"
 ]
 
-TRACK_AUTHORS = []
-
 DAYS_BACK = 7
 MAX_PAPERS_PER_TOPIC = 12
 TOP_SELECTION_TOTAL = 6
 MAX_FEED_ITEMS = 20
 
-# ---- Adaptive Length Controls ----
-TARGET_DURATION_MINUTES = 30
-BASE_MINUTES_PER_PAPER = 5
+TARGET_DURATION_MINUTES = 60
+BASE_MINUTES_PER_PAPER = 8
 CITATION_WEIGHT_FACTOR = 0.04
 
 BASE_URL = "https://juppifluppi.github.io/researchpodcast"
@@ -67,14 +64,10 @@ def random_long_pause():
     return AudioSegment.silent(duration=random.randint(2000, 3000))
 
 def apply_eq_moderator(audio):
-    audio = high_pass_filter(audio, 120)
-    audio = low_pass_filter(audio, 9000)
-    return audio + 1
+    return low_pass_filter(high_pass_filter(audio, 120), 9000) + 1
 
 def apply_eq_author(audio):
-    audio = high_pass_filter(audio, 80)
-    audio = low_pass_filter(audio, 7000)
-    return audio - 1
+    return low_pass_filter(high_pass_filter(audio, 80), 7000) - 1
 
 # =========================
 # FETCH PAPERS
@@ -107,6 +100,7 @@ def fetch_crossref():
         for item in data.get("message", {}).get("items", []):
             papers.append(extract_paper(item))
 
+    # Remove duplicates by DOI
     unique = {}
     for p in papers:
         if p["doi"]:
@@ -125,119 +119,111 @@ def generate_script(selected_papers):
     desired_minutes = max(TARGET_DURATION_MINUTES, base_duration)
 
     approx_tokens = int(desired_minutes * 200)
-    tokens_per_pass = min(8000, approx_tokens // 2)
+    max_tokens = min(10000, approx_tokens)
 
     citation_info = ""
     for p in selected_papers:
         depth_multiplier = 1 + (p["citations"] * CITATION_WEIGHT_FACTOR)
         citation_info += (
-            f"\nPaper: {p['title']}\n"
-            f"Citations: {p['citations']}\n"
-            f"Depth weight: {round(depth_multiplier,2)}x\n"
+            "\nPaper: " + p["title"] +
+            "\nCitations: " + str(p["citations"]) +
+            "\nDepth weight: " + str(round(depth_multiplier, 2)) + "x\n"
         )
 
     section = ""
     for p in selected_papers:
-        section += f"\n### PAPER_START: {p['title']}\n"
+        section += "\n### PAPER_START: " + p["title"] + "\n"
 
-    base_prompt = f"""
-Create a long-form, highly detailed scientific podcast dialogue.
-
-Target episode length: approximately {desired_minutes} minutes.
-
-Allocate deeper discussion to papers with higher citation weight.
-
-Depth weighting:
-{citation_info}
-
-Format strictly:
-
-MODERATOR:
-<Text>
-
-AUTHOR:
-<Text>
-
-Each paper must begin exactly with:
-### PAPER_START: <Title>
-"""
-
-    response1 = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": "You generate a detailed scientific podcast discussion."},
-            {"role": "user", "content": base_prompt + section}
-        ],
-        temperature=0.8,
-        max_tokens=tokens_per_pass
+    prompt = (
+        "Create a long-form scientific podcast dialogue.\n\n"
+        "STRICT RULES:\n"
+        "- Discuss ONLY the listed papers.\n"
+        "- NO cross-paper comparisons.\n"
+        "- NO general field commentary.\n"
+        "- NO meta research discussion.\n"
+        "- NO final global summary.\n\n"
+        "For EACH paper include:\n"
+        "- Deep theory\n"
+        "- Detailed methodology\n"
+        "- Statistical reasoning\n"
+        "- Mechanistic insights\n"
+        "- Limitations\n"
+        "- Paper-specific implications\n\n"
+        "Target length: approx " + str(desired_minutes) + " minutes.\n\n"
+        "Depth weighting:\n" + citation_info + "\n\n"
+        "Format strictly:\n\n"
+        "### PAPER_START: <Title>\n\n"
+        "MODERATOR:\n<Text>\n\n"
+        "AUTHOR:\n<Text>\n"
     )
-
-    part1 = response1.choices[0].message.content
-
-    response2 = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": "Continue the scientific dialogue seamlessly."},
-            {"role": "user", "content": "Continue with broader implications, cross-paper analysis, and future outlook."}
-        ],
-        temperature=0.8,
-        max_tokens=tokens_per_pass
-    )
-
-    part2 = response2.choices[0].message.content
-
-    return part1 + "\n\n" + part2
-
-# =========================
-# EPISODE METADATA
-# =========================
-
-def generate_episode_metadata(papers):
-
-    paper_list = "\n".join([
-        f"- {p['title']} ({p['journal']}) DOI: https://doi.org/{p['doi']}"
-        for p in papers
-    ])
-
-    prompt = f"""
-Generate:
-
-1) A professional podcast episode title (max 15 words).
-2) A short episode summary (4–6 sentences).
-3) Structured show notes listing the papers and one-sentence highlight each.
-
-Papers:
-{paper_list}
-"""
 
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "You generate podcast metadata."},
-            {"role": "user", "content": prompt}
+            {"role": "system", "content": "Generate focused scientific dialogue without drifting."},
+            {"role": "user", "content": prompt + section}
         ],
         temperature=0.7,
-        max_tokens=800
+        max_tokens=max_tokens
+    )
+
+    return response.choices[0].message.content
+
+# =========================
+# METADATA
+# =========================
+
+def generate_episode_metadata(papers, episode_number):
+
+    paper_list = ""
+    for p in papers:
+        paper_list += "- " + p["title"] + " (" + p["journal"] + ") DOI: https://doi.org/" + p["doi"] + "\n"
+
+    prompt = (
+        "Generate:\n"
+        "1) A VERY SHORT episode title (max 6 words).\n"
+        "2) A concise 3–4 sentence summary.\n\n"
+        "Papers:\n" + paper_list
+    )
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": "Generate concise podcast metadata."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.6,
+        max_tokens=300
     )
 
     text = response.choices[0].message.content.strip()
     lines = text.split("\n", 1)
 
-    title = lines[0].replace("**", "").strip()
-    description = lines[1] if len(lines) > 1 else text
+    raw_title = lines[0].replace("*", "").strip()
+    summary = lines[1] if len(lines) > 1 else ""
 
-    return title, description
+    show_notes = "<h3>Discussed Papers</h3><ul>"
+    for p in papers:
+        doi_link = "https://doi.org/" + p["doi"]
+        show_notes += (
+            "<li><strong>" + p["title"] + "</strong><br>"
+            "<em>" + p["journal"] + "</em><br>"
+            "DOI: <a href=\"" + doi_link + "\">" + doi_link + "</a>"
+            "</li>"
+        )
+    show_notes += "</ul>"
+
+    full_description = "<p>" + summary + "</p>" + show_notes
+    title = "Ep. " + str(episode_number).zfill(2) + " – " + raw_title
+
+    return title, full_description
 
 # =========================
-# AUDIO GENERATION
+# AUDIO
 # =========================
 
 def process_block(speaker, text):
     segments = []
-
-    if not text.strip():
-        return segments
-
     voice = "alloy" if "moderator" in speaker else "verse"
     pan = -0.08 if "moderator" in speaker else 0.08
     eq_func = apply_eq_moderator if "moderator" in speaker else apply_eq_author
@@ -267,7 +253,7 @@ def process_block(speaker, text):
 def generate_audio(script):
 
     os.makedirs(EPISODES_DIR, exist_ok=True)
-    filename = f"episode_{datetime.utcnow().strftime('%Y%m%d')}.mp3"
+    filename = "episode_" + datetime.utcnow().strftime("%Y%m%d") + ".mp3"
     final_path = os.path.join(EPISODES_DIR, filename)
 
     segments = []
@@ -301,14 +287,7 @@ def generate_audio(script):
 
     spoken = sum(segments)
     spoken = speed_adjust(normalize(spoken), speed=1.10)
-
-    spoken = compress_dynamic_range(
-        spoken,
-        threshold=-20.0,
-        ratio=2.0,
-        attack=5,
-        release=50
-    )
+    spoken = compress_dynamic_range(spoken, threshold=-20.0, ratio=2.0)
 
     intro = normalize(AudioSegment.from_mp3("intro_music.mp3")).fade_out(2000)
     outro = normalize(AudioSegment.from_mp3("intro_music.mp3")).fade_in(2000)
@@ -322,40 +301,49 @@ def generate_audio(script):
 # RSS
 # =========================
 
-def update_rss(filename, duration_seconds, title, description):
+def update_rss(filename, duration_seconds, title, description, episode_number):
 
     feed_path = "feed.xml"
-    episode_url = f"{BASE_URL}/episodes/{filename}"
-    pub_date = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
+    episode_url = BASE_URL + "/episodes/" + filename
+    cover_url = BASE_URL + "/cover.png"
+    pub_date = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
 
     if not os.path.exists(feed_path):
-        rss = ET.Element("rss", version="2.0",
-                         attrib={"xmlns:itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd"})
+        rss = ET.Element(
+            "rss",
+            version="2.0",
+            attrib={"xmlns:itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd"}
+        )
         channel = ET.SubElement(rss, "channel")
 
         ET.SubElement(channel, "title").text = PODCAST_TITLE
         ET.SubElement(channel, "link").text = BASE_URL
         ET.SubElement(channel, "description").text = PODCAST_DESCRIPTION
         ET.SubElement(channel, "language").text = PODCAST_LANGUAGE
+
+        image = ET.SubElement(channel, "itunes:image")
+        image.set("href", cover_url)
     else:
         tree = ET.parse(feed_path)
         rss = tree.getroot()
         channel = rss.find("channel")
 
-    item = ET.SubElement(channel, "item")
+    item = ET.Element("item")
     ET.SubElement(item, "title").text = title
     ET.SubElement(item, "description").text = description
     ET.SubElement(item, "pubDate").text = pub_date
     ET.SubElement(item, "guid").text = episode_url
+    ET.SubElement(item, "itunes:episode").text = str(episode_number)
+    ET.SubElement(item, "itunes:duration").text = str(duration_seconds)
 
     enclosure = ET.SubElement(item, "enclosure")
     enclosure.set("url", episode_url)
     enclosure.set("type", "audio/mpeg")
 
-    ET.SubElement(item, "itunes:duration").text = str(duration_seconds)
+    channel.insert(0, item)
 
     items = channel.findall("item")
-    for old in items[:-MAX_FEED_ITEMS]:
+    for old in items[MAX_FEED_ITEMS:]:
         channel.remove(old)
 
     ET.ElementTree(rss).write(feed_path, encoding="utf-8", xml_declaration=True)
@@ -368,8 +356,17 @@ def main():
     papers = fetch_crossref()[:TOP_SELECTION_TOTAL]
     script = generate_script(papers)
     filename, duration = generate_audio(script)
-    title, description = generate_episode_metadata(papers)
-    update_rss(filename, duration, title, description)
+
+    if os.path.exists("feed.xml"):
+        tree = ET.parse("feed.xml")
+        channel = tree.getroot().find("channel")
+        episode_number = len(channel.findall("item")) + 1
+    else:
+        episode_number = 1
+
+    title, description = generate_episode_metadata(papers, episode_number)
+    update_rss(filename, duration, title, description, episode_number)
+
     print("Episode generated:", title)
 
 if __name__ == "__main__":
