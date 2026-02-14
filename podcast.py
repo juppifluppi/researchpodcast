@@ -13,8 +13,8 @@ from datetime import datetime, timedelta
 # CONFIG
 # =========================
 
-TOPICS = ["lipid nanoparticle", "bioconjugation", "drug mucin bile interactions"]
-TRACK_AUTHORS = ["Lorenz Meinel", "Tessa Lühmann", "Robert Luxenhofer", "Christel Bergström"]
+TOPICS = ["lipid nanoparticle", "bioconjugation", "drug mucin bile interactions", "polyoxazoline"]
+TRACK_AUTHORS = ["Lorenz Meinel", "Tessa Lühmann", "Christoph Sotriffer", "Robert Luxenhofer", "Christel Bergström"]
 
 DAYS_BACK = 7
 MAX_PAPERS_PER_TOPIC = 12
