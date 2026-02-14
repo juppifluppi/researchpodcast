@@ -17,16 +17,12 @@ TARGET_AUTHORS = [
     "Lorenz Meinel",
     "Tessa Lühmann",
     "Josef Kehrein",
-    "Marcus Gutmann",
+    "Robert Luxenhofer"
 ]
 
 DAYS_BACK = 7
 TOP_SELECTION_TOTAL = 10
 MAX_FEED_ITEMS = 20
-
-TARGET_DURATION_MINUTES = 30
-BASE_MINUTES_PER_PAPER = 5
-CITATION_WEIGHT_FACTOR = 0.08
 
 BASE_URL = "https://juppifluppi.github.io/researchpodcast"
 EPISODES_DIR = "episodes"
@@ -69,7 +65,7 @@ def apply_eq_author(audio):
     return low_pass_filter(high_pass_filter(audio, 80), 7000) - 1
 
 # =========================
-# AUTHOR PROFILE BUILDING
+# AUTHOR PROFILE
 # =========================
 
 def build_author_profile():
@@ -77,12 +73,7 @@ def build_author_profile():
     abstracts = []
 
     for author in TARGET_AUTHORS:
-        url = (
-            "https://api.crossref.org/works?"
-            f"query.author={author}"
-            "&rows=40"
-        )
-
+        url = "https://api.crossref.org/works?query.author=" + author + "&rows=40"
         response = requests.get(url)
         data = response.json()
 
@@ -91,12 +82,12 @@ def build_author_profile():
             if abstract:
                 abstracts.append(abstract)
 
-    combined_text = "\n".join(abstracts[:30])
+    combined = "\n".join(abstracts[:30])
 
     prompt = (
-        "Analyze the following abstracts and summarize the core research themes, "
-        "technological focus, applications, and scientific philosophy of these authors. "
-        "Be concise but precise.\n\n" + combined_text
+        "Analyze these abstracts and summarize the core research themes, "
+        "technologies, applications, and scientific philosophy of the authors:\n\n"
+        + combined
     )
 
     response = client.chat.completions.create(
@@ -118,12 +109,7 @@ def build_author_profile():
 def fetch_recent_papers():
 
     start_date = (datetime.utcnow() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
-
-    url = (
-        "https://api.crossref.org/works?"
-        f"filter=from-pub-date:{start_date}"
-        "&rows=120"
-    )
+    url = "https://api.crossref.org/works?filter=from-pub-date:" + start_date + "&rows=120"
 
     response = requests.get(url)
     data = response.json()
@@ -154,9 +140,9 @@ def rank_by_author_alignment(papers, author_profile):
     text = ""
     for i, p in enumerate(papers):
         text += (
-            f"\nPaper {i+1}\n"
-            f"Title: {p['title']}\n"
-            f"Abstract: {p['summary'][:1200]}\n"
+            "\nPaper " + str(i+1) + "\n"
+            "Title: " + p["title"] + "\n"
+            "Abstract: " + p["summary"][:1200] + "\n"
         )
 
     prompt = (
@@ -164,7 +150,7 @@ def rank_by_author_alignment(papers, author_profile):
         + author_profile +
         "\n\nSelect the "
         + str(TOP_SELECTION_TOTAL) +
-        " papers most aligned with this profile.\n"
+        " papers most aligned with this profile. "
         "Return ONLY numbers separated by commas.\n\n"
         + text
     )
@@ -213,43 +199,27 @@ def generate_script(selected_papers):
     author_style = random.choice(author_styles)
 
     section = ""
-    citation_info = ""
-
     for p in selected_papers:
-        depth_multiplier = 1 + (p["citations"] * CITATION_WEIGHT_FACTOR)
-        citation_info += (
-            "\nPaper: " + p["title"] +
-            "\nCitations: " + str(p["citations"]) +
-            "\nDepth weight: " + str(round(depth_multiplier, 2)) + "x\n"
-        )
         section += "\n### PAPER_START: " + p["title"] + "\n"
 
     prompt = (
-        "Create a highly dynamic scientific podcast dialogue.\n\n"
-        "PERSONALITY:\n"
-        "- Moderator is " + moderator_style + ".\n"
-        "- Author is " + author_style + ".\n\n"
-        "RULES:\n"
+        "Create a dynamic scientific podcast dialogue.\n\n"
+        "Moderator is " + moderator_style + ".\n"
+        "Author is " + author_style + ".\n\n"
+        "Rules:\n"
         "- Discuss ONLY the listed papers.\n"
-        "- NO cross-paper commentary.\n"
-        "- NO statistical deep dives.\n"
+        "- No cross-paper commentary.\n"
+        "- No statistical deep dives.\n"
         "- Avoid mentioning specific tests or p-values.\n\n"
-        "DYNAMICS:\n"
-        "- Moderator occasionally challenges assumptions.\n"
-        "- Include controlled disagreement moments.\n"
-        "- Add subtle emotional nuance.\n"
-        "- Occasionally use sophisticated analogies.\n\n"
-        "Focus on:\n"
-        "- Core innovation\n"
-        "- Mechanism\n"
-        "- Conceptual advance\n"
-        "- Real-world implications\n"
-        "- High-level limitations\n\n"
-        "Depth weighting:\n" + citation_info + "\n\n"
+        "Include:\n"
+        "- Controlled disagreement moments\n"
+        "- Occasional analogies\n"
+        "- Subtle emotional nuance\n"
+        "- Probing questions from moderator\n\n"
         "Format strictly:\n\n"
         "### PAPER_START: <Title>\n\n"
-        "MODERATOR:\n<Text>\n\n"
-        "AUTHOR:\n<Text>\n"
+        "MODERATOR:\nText\n\n"
+        "AUTHOR:\nText\n"
     )
 
     response = client.chat.completions.create(
@@ -292,7 +262,7 @@ def generate_episode_metadata(papers, episode_number):
     text = response.choices[0].message.content.strip()
     lines = text.split("\n", 1)
 
-    raw_title = lines[0].strip()
+    raw_title = lines[0]
     raw_title = re.sub(r"^\s*\d+[\).\s-]*", "", raw_title)
     raw_title = re.sub(r"(?i)^episode\s*title\s*:\s*", "", raw_title)
     raw_title = raw_title.replace("*", "").strip()
@@ -301,3 +271,188 @@ def generate_episode_metadata(papers, episode_number):
 
     show_notes = "<h3>Discussed Papers</h3><ul>"
     for p in papers:
+        doi_link = "https://doi.org/" + p["doi"]
+        show_notes += (
+            "<li><strong>" + p["title"] + "</strong><br>"
+            "<em>" + p["journal"] + "</em><br>"
+            "DOI: <a href=\"" + doi_link + "\">" + doi_link + "</a>"
+            "</li>"
+        )
+    show_notes += "</ul>"
+
+    title = "Ep. " + str(episode_number).zfill(2) + " – " + raw_title
+    description = "<p>" + summary + "</p>" + show_notes
+
+    return title, description
+
+# =========================
+# AUDIO
+# =========================
+
+def process_block(speaker, text):
+
+    segments = []
+
+    voice = "alloy" if "moderator" in speaker else "verse"
+    pan = -0.08 if "moderator" in speaker else 0.08
+    eq_func = apply_eq_moderator if "moderator" in speaker else apply_eq_author
+
+    words = text.split()
+    chunks = [" ".join(words[i:i+650]) for i in range(0, len(words), 650)]
+
+    for chunk in chunks:
+        speech = client.audio.speech.create(
+            model="gpt-4o-mini-tts",
+            voice=voice,
+            input=chunk
+        )
+
+        temp_path = os.path.join(EPISODES_DIR, "temp.mp3")
+        with open(temp_path, "wb") as f:
+            f.write(speech.content)
+
+        segment = AudioSegment.from_mp3(temp_path)
+        segment = eq_func(segment).pan(pan)
+
+        segments.append(segment)
+        segments.append(random_pause())
+
+    return segments
+
+
+def generate_audio(script):
+
+    os.makedirs(EPISODES_DIR, exist_ok=True)
+    filename = "episode_" + datetime.utcnow().strftime("%Y%m%d") + ".mp3"
+    final_path = os.path.join(EPISODES_DIR, filename)
+
+    segments = []
+    current_speaker = None
+    buffer = ""
+
+    for line in script.split("\n"):
+        line = line.strip()
+
+        if line.startswith("### PAPER_START"):
+            if buffer:
+                segments.extend(process_block(current_speaker, buffer))
+                buffer = ""
+            segments.append(random_long_pause())
+            continue
+
+        speaker_match = re.match(r"^(MODERATOR|AUTHOR)\s*[:\-]?$", line)
+
+        if speaker_match:
+            if buffer:
+                segments.extend(process_block(current_speaker, buffer))
+                buffer = ""
+            current_speaker = speaker_match.group(1).lower()
+            continue
+
+        if current_speaker:
+            buffer += " " + line
+
+    if buffer:
+        segments.extend(process_block(current_speaker, buffer))
+
+    spoken = sum(segments)
+    spoken = speed_adjust(normalize(spoken), speed=1.10)
+    spoken = compress_dynamic_range(spoken, threshold=-20.0, ratio=2.0)
+
+    intro = normalize(AudioSegment.from_mp3("intro_music.mp3")).fade_out(2000)
+    outro = normalize(AudioSegment.from_mp3("intro_music.mp3")).fade_in(2000)
+
+    final_audio = normalize(intro + spoken + outro)
+    final_audio.export(final_path, format="mp3")
+
+    return filename, int(len(final_audio) / 1000)
+
+# =========================
+# RSS
+# =========================
+
+def update_rss(filename, duration_seconds, title, description, episode_number):
+
+    feed_path = "feed.xml"
+    episode_url = BASE_URL + "/episodes/" + filename
+    cover_url = BASE_URL + "/cover.png"
+    pub_date = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+    if not os.path.exists(feed_path):
+        rss = ET.Element(
+            "rss",
+            version="2.0",
+            attrib={"xmlns:itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd"}
+        )
+        channel = ET.SubElement(rss, "channel")
+
+        ET.SubElement(channel, "title").text = PODCAST_TITLE
+        ET.SubElement(channel, "link").text = BASE_URL
+        ET.SubElement(channel, "description").text = PODCAST_DESCRIPTION
+        ET.SubElement(channel, "language").text = PODCAST_LANGUAGE
+
+        image = ET.SubElement(channel, "itunes:image")
+        image.set("href", cover_url)
+
+    else:
+        tree = ET.parse(feed_path)
+        rss = tree.getroot()
+        channel = rss.find("channel")
+
+    item = ET.Element("item")
+    ET.SubElement(item, "title").text = title
+    ET.SubElement(item, "description").text = description
+    ET.SubElement(item, "pubDate").text = pub_date
+    ET.SubElement(item, "guid").text = episode_url
+    ET.SubElement(item, "itunes:episode").text = str(episode_number)
+    ET.SubElement(item, "itunes:duration").text = str(duration_seconds)
+
+    enclosure = ET.SubElement(item, "enclosure")
+    enclosure.set("url", episode_url)
+    enclosure.set("type", "audio/mpeg")
+
+    channel.insert(0, item)
+
+    items = channel.findall("item")
+    for old in items[MAX_FEED_ITEMS:]:
+        channel.remove(old)
+
+    ET.ElementTree(rss).write(feed_path, encoding="utf-8", xml_declaration=True)
+
+# =========================
+# MAIN
+# =========================
+
+def main():
+
+    print("Building author research profile...")
+    author_profile = build_author_profile()
+
+    print("Fetching recent papers...")
+    recent_papers = fetch_recent_papers()
+
+    print("Ranking papers by alignment...")
+    selected_papers = rank_by_author_alignment(recent_papers, author_profile)
+
+    if not selected_papers:
+        print("No aligned papers found.")
+        return
+
+    script = generate_script(selected_papers)
+    filename, duration = generate_audio(script)
+
+    if os.path.exists("feed.xml"):
+        tree = ET.parse("feed.xml")
+        channel = tree.getroot().find("channel")
+        episode_number = len(channel.findall("item")) + 1
+    else:
+        episode_number = 1
+
+    title, description = generate_episode_metadata(selected_papers, episode_number)
+    update_rss(filename, duration, title, description, episode_number)
+
+    print("Episode generated:", title)
+
+
+if __name__ == "__main__":
+    main()
