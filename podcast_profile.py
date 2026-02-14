@@ -268,7 +268,13 @@ def generate_audio(script):
     if buffer and speaker:
         segments.append(process_block(speaker, buffer))
 
-    spoken = sum(segments)
+    if not segments:
+        raise ValueError("No speech segments generated. Script parsing failed.")
+
+    spoken = segments[0]
+    for seg in segments[1:]:
+        spoken += seg
+
     spoken = speed_adjust(normalize(spoken))
     spoken = compress_dynamic_range(spoken, threshold=-20, ratio=2.0)
 
