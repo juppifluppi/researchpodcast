@@ -13,16 +13,14 @@ from pydub.effects import compress_dynamic_range, high_pass_filter, low_pass_fil
 # =========================
 
 AUTHOR_IDS = [
-    "https://openalex.org/A5001051737",
-    "https://openalex.org/A5000977163",
     "https://openalex.org/A5018917714"
 ]
 
 DAYS_BACK = 7
 TARGET_DURATION_MINUTES = 30
-BASE_MINUTES_PER_PAPER = 5
+BASE_MINUTES_PER_PAPER = 3
 CITATION_WEIGHT_FACTOR = 0.04
-MAX_FEED_ITEMS = 20
+MAX_FEED_ITEMS = 10
 
 BASE_URL = "https://juppifluppi.github.io/researchpodcast"
 EPISODES_DIR = "episodes"
