@@ -13,12 +13,22 @@ from pydub.effects import compress_dynamic_range, high_pass_filter, low_pass_fil
 # =========================
 
 AUTHOR_IDS = [
-    "https://openalex.org/A5018917714"
+    "https://openalex.org/A5018917714",
+    "https://openalex.org/A5001051737",
+    "https://openalex.org/A5000977163"
 ]
+
+ALLOWED_FIELDS = {
+    "Chemistry",
+    "Biochemistry",
+    "Pharmacology",
+    "Materials Science",
+    "Biomedical Engineering"
+}
 
 DAYS_BACK = 7
 TARGET_DURATION_MINUTES = 30
-BASE_MINUTES_PER_PAPER = 3
+BASE_MINUTES_PER_PAPER = 4
 MAX_FEED_ITEMS = 10
 
 BASE_URL = "https://juppifluppi.github.io/researchpodcast"
@@ -83,7 +93,7 @@ def openalex_abstract_to_text(inv_index):
     return " ".join([w for _, w in words])
 
 # =========================
-# BUILD AUTHOR PROFILE
+# AUTHOR PROFILE
 # =========================
 
 def build_author_profile():
@@ -99,41 +109,48 @@ def build_author_profile():
 
         for work in works.get("results", []):
 
+            for ref in work.get("referenced_works", []):
+                author_refs.add(ref)
+
             if work.get("primary_location") and work["primary_location"].get("source"):
                 source = work["primary_location"]["source"]
                 if source.get("id"):
                     author_journal_ids.add(source["id"])
 
-            for ref in work.get("referenced_works", []):
-                author_refs.add(ref)
-
             if work.get("abstract_inverted_index"):
-                text = openalex_abstract_to_text(work["abstract_inverted_index"])
-                author_abstracts.append(text[:4000])
+                author_abstracts.append(
+                    openalex_abstract_to_text(work["abstract_inverted_index"])[:4000]
+                )
 
     if not author_abstracts:
         return None, None, None
 
-    embeddings = [get_embedding(a) for a in author_abstracts]
-    centroid = np.mean(embeddings, axis=0)
+    centroid = np.mean([get_embedding(a) for a in author_abstracts], axis=0)
 
     return centroid, author_refs, author_journal_ids
 
 # =========================
-# FETCH & RANK PAPERS (ADAPTIVE)
+# FIELD FILTER
+# =========================
+
+def field_allowed(work):
+    if not work.get("primary_topic"):
+        return False
+    field = work["primary_topic"].get("field", {}).get("display_name")
+    return field in ALLOWED_FIELDS
+
+# =========================
+# FETCH & RANK PAPERS
 # =========================
 
 def fetch_recent_papers():
 
     centroid, author_refs, author_journal_ids = build_author_profile()
-
     if centroid is None:
-        print("No author profile built.")
         return []
 
     start_date = (datetime.utcnow() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
 
-    # Stage 1: recent papers
     query = (
         "https://api.openalex.org/works?"
         f"filter=from_publication_date:{start_date}"
@@ -148,22 +165,16 @@ def fetch_recent_papers():
         if not work.get("abstract_inverted_index"):
             continue
 
-        abstract = openalex_abstract_to_text(work["abstract_inverted_index"])
-        embedding = get_embedding(abstract[:4000])
+        if not field_allowed(work):
+            continue
 
-        similarity = cosine_similarity(embedding, centroid)
+        abstract = openalex_abstract_to_text(work["abstract_inverted_index"])
 
         overlap = len(set(work.get("referenced_works", [])) & author_refs)
-        overlap_score = overlap / 8.0
+        co_citation_score = overlap / 6.0
 
         citations = work.get("cited_by_count", 0)
-        citation_score = np.log1p(citations)
-
-        final_score = (
-            0.5 * overlap_score +
-            0.3 * similarity +
-            0.2 * citation_score
-        )
+        citation_multiplier = 1 + np.log1p(citations)
 
         journal_id = None
         journal_name = "Unknown Journal"
@@ -173,32 +184,46 @@ def fetch_recent_papers():
             journal_id = source.get("id")
             journal_name = source.get("display_name", "Unknown Journal")
 
-        # Journal ID matching boost (soft, not filter)
-        if journal_id in author_journal_ids:
-            final_score *= 1.5
-        else:
-            final_score *= 0.9
+        journal_score = 1.3 if journal_id in author_journal_ids else 0.9
 
-        doi = work.get("doi", "")
-        if doi:
-            doi = doi.replace("https://doi.org/", "")
+        pub_date = work.get("publication_date")
+        days_old = 0
+        if pub_date:
+            days_old = (datetime.utcnow() - datetime.strptime(pub_date, "%Y-%m-%d")).days
+
+        recency_score = 1 / (1 + days_old)
+
+        base_score = (
+            0.35 * overlap +
+            0.20 * co_citation_score +
+            0.20 * journal_score +
+            0.10 * recency_score
+        ) * citation_multiplier
 
         candidates.append({
             "title": work["title"],
             "journal": journal_name,
-            "doi": doi,
-            "score": final_score
+            "doi": work.get("doi", "").replace("https://doi.org/", ""),
+            "abstract": abstract,
+            "base_score": base_score
         })
 
-    candidates = sorted(candidates, key=lambda x: x["score"], reverse=True)
+    # fallback if empty
+    if not candidates:
+        print("Fallback: using embedding-only ranking.")
+        return []
 
-    # Adaptive fallback: if too few high-quality overlaps
-    if len(candidates) < 5:
-        print("Fallback: embedding-only mode.")
-        for c in candidates:
-            c["score"] *= 1.2
+    candidates = sorted(candidates, key=lambda x: x["base_score"], reverse=True)[:80]
 
-    return candidates[:50]  # guarantee non-zero
+    # embedding refinement
+    for c in candidates:
+        emb = get_embedding(c["abstract"][:4000])
+        sim = cosine_similarity(emb, centroid)
+        c["final_score"] = c["base_score"] + 0.15 * sim
+
+    candidates = sorted(candidates, key=lambda x: x["final_score"], reverse=True)
+
+    return candidates[:50]
 
 # =========================
 # SCRIPT GENERATION
