@@ -12,7 +12,6 @@ from pydub.effects import compress_dynamic_range, high_pass_filter, low_pass_fil
 # =========================
 
 AUTHOR_IDS = [
-    "https://openalex.org/A5001051737",
     "https://openalex.org/A5018917714"
 ]
 
@@ -28,8 +27,8 @@ FEED_PATH = "feed.xml"
 COVER_URL = BASE_URL + "/cover.png"
 
 PODCAST_TITLE = "Research Updates"
-PODCAST_DESCRIPTION = "AI-generated deep dive into recent scientific publications."
-PODCAST_LANGUAGE = "en-us"
+PODCAST_DESCRIPTION = "KI-generierte Analyse aktueller wissenschaftlicher Publikationen."
+PODCAST_LANGUAGE = "de-de"
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -41,7 +40,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 def normalize(audio):
     return audio.apply_gain(-20.0 - audio.dBFS)
 
-def speed_adjust(audio, speed=1.08):
+def speed_adjust(audio, speed=1.05):
     return audio._spawn(
         audio.raw_data,
         overrides={"frame_rate": int(audio.frame_rate * speed)}
@@ -70,7 +69,7 @@ def cosine_similarity(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 # =========================
-# OPENALEX UTILITIES
+# OPENALEX HELPERS
 # =========================
 
 def openalex_abstract_to_text(inv_index):
@@ -112,11 +111,12 @@ def extract_author_concepts():
 # =========================
 
 def fetch_papers():
+
     start_date = (datetime.utcnow() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
     concept_ids = extract_author_concepts()
 
     if not concept_ids:
-        print("No dominant concepts found.")
+        print("Keine dominanten Konzepte gefunden.")
         return []
 
     concept_filter = "|".join(concept_ids)
@@ -130,9 +130,10 @@ def fetch_papers():
     recent = requests.get(query).json()
 
     author_abstracts = []
+
     for author_id in AUTHOR_IDS:
         works = requests.get(
-            f"https://api.openalex.org/works?filter=author.id:{author_id}&per_page=40"
+            f"https://api.openalex.org/works?filter=author.id:{author_id}&per_page=30"
         ).json()
 
         for work in works.get("results", []):
@@ -142,11 +143,11 @@ def fetch_papers():
                 )
 
     if not author_abstracts:
-        print("No author abstracts found.")
+        print("Keine Autoren-Abstracts gefunden.")
         return []
 
     centroid = np.mean(
-        [get_embedding(a[:4000]) for a in author_abstracts[:30]],
+        [get_embedding(a[:4000]) for a in author_abstracts[:20]],
         axis=0
     )
 
@@ -173,7 +174,6 @@ def fetch_papers():
 
         candidates.append({
             "title": work["title"],
-            "summary": abstract,
             "journal": journal,
             "doi": doi,
             "score": score
@@ -182,31 +182,31 @@ def fetch_papers():
     return sorted(candidates, key=lambda x: x["score"], reverse=True)
 
 # =========================
-# SCRIPT GENERATION
+# SCRIPT GENERATION (GERMAN)
 # =========================
 
 def generate_script(selected_papers):
 
     section = ""
     for p in selected_papers:
-        section += f"\nPaper: {p['title']}\n"
+        section += f"\nPaper (Titel bleibt Englisch): {p['title']}\n"
 
     prompt = (
-        "Create a clear, structured scientific podcast dialogue.\n"
-        "The purpose is that listeners understand the manuscripts.\n"
-        "No contrarian tone.\n"
-        "No humor.\n"
-        "No hashtags.\n"
-        "No markdown.\n"
-        "No rhetorical drama.\n\n"
-        "For each paper discuss:\n"
-        "- Research problem\n"
-        "- Core innovation\n"
-        "- Mechanism\n"
-        "- Main findings\n"
-        "- Practical implications\n"
-        "- Brief limitations\n\n"
-        "Format strictly:\n\n"
+        "Erstelle einen klar strukturierten wissenschaftlichen Podcast-Dialog auf Deutsch.\n"
+        "Die Titel der Paper müssen im Original-Englisch genannt werden.\n\n"
+        "Ziel ist, dass die Zuhörer den wissenschaftlichen Inhalt verstehen.\n\n"
+        "Keine Dramatisierung.\n"
+        "Kein Humor.\n"
+        "Keine Hashtags.\n"
+        "Kein Markdown.\n\n"
+        "Für jedes Paper besprecht:\n"
+        "- Forschungsproblem\n"
+        "- Innovation\n"
+        "- Mechanismus\n"
+        "- Ergebnisse\n"
+        "- Implikationen\n"
+        "- Limitationen\n\n"
+        "Format strikt:\n\n"
         "MODERATOR:\nText\n\n"
         "AUTHOR:\nText\n"
     )
@@ -214,7 +214,7 @@ def generate_script(selected_papers):
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Generate a structured academic dialogue."},
+            {"role": "system", "content": "Erzeuge einen präzisen wissenschaftlichen Dialog."},
             {"role": "user", "content": prompt + section}
         ],
         temperature=0.6,
@@ -222,8 +222,6 @@ def generate_script(selected_papers):
     )
 
     script = response.choices[0].message.content
-
-    # Clean potential markdown artifacts
     script = script.replace("#", "")
     return script
 
@@ -232,6 +230,7 @@ def generate_script(selected_papers):
 # =========================
 
 def process_block(speaker, text):
+
     voice = "alloy" if speaker == "moderator" else "verse"
     eq = apply_eq_moderator if speaker == "moderator" else apply_eq_author
 
@@ -241,11 +240,11 @@ def process_block(speaker, text):
         input=text
     )
 
-    temp = os.path.join(EPISODES_DIR, "temp.mp3")
-    with open(temp, "wb") as f:
+    temp_path = os.path.join(EPISODES_DIR, "temp.mp3")
+    with open(temp_path, "wb") as f:
         f.write(speech.content)
 
-    return eq(AudioSegment.from_mp3(temp))
+    return eq(AudioSegment.from_mp3(temp_path))
 
 def generate_audio(script):
 
@@ -285,7 +284,7 @@ def generate_audio(script):
         segments.append(process_block(speaker, buffer))
 
     if not segments:
-        raise ValueError("No speech segments generated.")
+        raise ValueError("Keine Sprachsegmente generiert.")
 
     spoken = segments[0]
     for seg in segments[1:]:
@@ -329,7 +328,7 @@ def update_rss(filename, duration, selected_papers):
     episode_number = len(channel.findall("item")) + 1
     title = f"Ep. {str(episode_number).zfill(2)}"
 
-    description = "<h3>Discussed Papers</h3><ul>"
+    description = "<h3>Besprochene Paper</h3><ul>"
     for p in selected_papers:
         doi_link = f"https://doi.org/{p['doi']}"
         description += (
@@ -352,11 +351,6 @@ def update_rss(filename, duration, selected_papers):
     enclosure.set("type", "audio/mpeg")
 
     channel.insert(0, item)
-
-    items = channel.findall("item")
-    for old in items[MAX_FEED_ITEMS:]:
-        channel.remove(old)
-
     ET.ElementTree(rss).write(FEED_PATH, encoding="utf-8", xml_declaration=True)
 
 # =========================
@@ -367,7 +361,7 @@ def main():
     ranked = fetch_papers()
 
     if not ranked:
-        print("No aligned papers found.")
+        print("Keine passenden Paper gefunden.")
         return
 
     num_papers = max(3, min(8, TARGET_DURATION_MINUTES // BASE_MINUTES_PER_PAPER))
@@ -378,7 +372,7 @@ def main():
 
     update_rss(filename, duration, selected)
 
-    print("Episode generated:", filename)
+    print("Episode erstellt:", filename)
 
 if __name__ == "__main__":
     main()
