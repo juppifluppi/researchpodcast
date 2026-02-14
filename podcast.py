@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 # CONFIG
 # =========================
 
-TOPICS = ["TOPIC_ONE", "TOPIC_TWO"]  # Add or remove topics
+TOPICS = ["Lipid nanoparticle", "bioconjugation"]  # Add or remove topics
 DAYS_BACK = 14
 MAX_PAPERS_PER_TOPIC = 12
 TOP_SELECTION_TOTAL = 6  # total papers discussed
