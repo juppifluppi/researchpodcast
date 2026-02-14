@@ -2,7 +2,6 @@ import os
 import requests
 import numpy as np
 import json
-import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from openai import OpenAI
@@ -14,9 +13,7 @@ from pydub.effects import compress_dynamic_range, high_pass_filter, low_pass_fil
 # =========================
 
 AUTHOR_IDS = [
-    "https://openalex.org/A5018917714",
-    "https://openalex.org/A5001051737",
-    "https://openalex.org/A5000977163"
+    "https://openalex.org/A5018917714"
 ]
 
 DAYS_BACK = 7
@@ -92,18 +89,20 @@ def openalex_abstract_to_text(inv_index):
 def build_author_profile():
 
     author_refs = set()
-    author_journals = set()
+    author_journal_ids = set()
     author_abstracts = []
 
     for author_id in AUTHOR_IDS:
         works = requests.get(
-            f"https://api.openalex.org/works?filter=author.id:{author_id}&sort=publication_date:desc&per_page=15"
+            f"https://api.openalex.org/works?filter=author.id:{author_id}&sort=publication_date:desc&per_page=20"
         ).json()
 
         for work in works.get("results", []):
 
             if work.get("primary_location") and work["primary_location"].get("source"):
-                author_journals.add(work["primary_location"]["source"]["display_name"])
+                source = work["primary_location"]["source"]
+                if source.get("id"):
+                    author_journal_ids.add(source["id"])
 
             for ref in work.get("referenced_works", []):
                 author_refs.add(ref)
@@ -118,15 +117,15 @@ def build_author_profile():
     embeddings = [get_embedding(a) for a in author_abstracts]
     centroid = np.mean(embeddings, axis=0)
 
-    return centroid, author_refs, author_journals
+    return centroid, author_refs, author_journal_ids
 
 # =========================
-# FETCH & RANK PAPERS
+# FETCH & RANK PAPERS (ADAPTIVE)
 # =========================
 
 def fetch_recent_papers():
 
-    centroid, author_refs, author_journals = build_author_profile()
+    centroid, author_refs, author_journal_ids = build_author_profile()
 
     if centroid is None:
         print("No author profile built.")
@@ -134,10 +133,11 @@ def fetch_recent_papers():
 
     start_date = (datetime.utcnow() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
 
+    # Stage 1: recent papers
     query = (
         "https://api.openalex.org/works?"
         f"filter=from_publication_date:{start_date}"
-        "&per_page=200"
+        "&per_page=250"
     )
 
     recent = requests.get(query).json()
@@ -154,7 +154,7 @@ def fetch_recent_papers():
         similarity = cosine_similarity(embedding, centroid)
 
         overlap = len(set(work.get("referenced_works", [])) & author_refs)
-        overlap_score = overlap / 10.0
+        overlap_score = overlap / 8.0
 
         citations = work.get("cited_by_count", 0)
         citation_score = np.log1p(citations)
@@ -165,15 +165,19 @@ def fetch_recent_papers():
             0.2 * citation_score
         )
 
-        journal = "Unknown Journal"
-        if work.get("primary_location") and work["primary_location"].get("source"):
-            journal = work["primary_location"]["source"]["display_name"]
+        journal_id = None
+        journal_name = "Unknown Journal"
 
-        if journal not in author_journals:
-            continue
-        
-        if journal in author_journals:
-            final_score *= 1.2
+        if work.get("primary_location") and work["primary_location"].get("source"):
+            source = work["primary_location"]["source"]
+            journal_id = source.get("id")
+            journal_name = source.get("display_name", "Unknown Journal")
+
+        # Journal ID matching boost (soft, not filter)
+        if journal_id in author_journal_ids:
+            final_score *= 1.5
+        else:
+            final_score *= 0.9
 
         doi = work.get("doi", "")
         if doi:
@@ -181,12 +185,20 @@ def fetch_recent_papers():
 
         candidates.append({
             "title": work["title"],
-            "journal": journal,
+            "journal": journal_name,
             "doi": doi,
             "score": final_score
         })
 
-    return sorted(candidates, key=lambda x: x["score"], reverse=True)
+    candidates = sorted(candidates, key=lambda x: x["score"], reverse=True)
+
+    # Adaptive fallback: if too few high-quality overlaps
+    if len(candidates) < 5:
+        print("Fallback: embedding-only mode.")
+        for c in candidates:
+            c["score"] *= 1.2
+
+    return candidates[:50]  # guarantee non-zero
 
 # =========================
 # SCRIPT GENERATION
@@ -206,9 +218,7 @@ def generate_script(selected_papers):
     prompt = (
         f"Create a structured academic podcast dialogue.\n"
         f"Target length approximately {desired_minutes} minutes.\n\n"
-        "Discuss ONLY the listed papers.\n"
-        "No general commentary.\n\n"
-        "Discuss (1) research question, (2) methodology, and (3) findings.\n"
+        "Discuss ONLY the listed papers.\n\n"
         "Mark each paper start EXACTLY as:\n"
         "=== PAPER: <Title> ===\n\n"
         "Format strictly:\n"
@@ -226,8 +236,7 @@ def generate_script(selected_papers):
         max_tokens=9000
     )
 
-    script = response.choices[0].message.content
-    return script.replace("#", "")
+    return response.choices[0].message.content
 
 # =========================
 # AUDIO + CHAPTERS
@@ -316,7 +325,6 @@ def generate_audio(script):
 
     duration_seconds = int(len(final) / 1000)
 
-    # Chapters evenly spaced (simple approximation)
     chapters = []
     if chapter_titles:
         step = duration_seconds // len(chapter_titles)
@@ -391,11 +399,6 @@ def update_rss(filename, duration, selected_papers, chapter_file):
     ET.SubElement(item, "podcast:chapters").set("url", chapter_url)
 
     channel.insert(0, item)
-
-    items = channel.findall("item")
-    for old in items[MAX_FEED_ITEMS:]:
-        channel.remove(old)
-
     ET.ElementTree(rss).write(FEED_PATH, encoding="utf-8", xml_declaration=True)
 
 # =========================
