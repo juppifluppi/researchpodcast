@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 # CONFIG
 # =========================
 
-TOPIC = "YOUR_TOPIC_HERE"
+TOPIC = "lipid nanoparticle"
 MAX_PAPERS = 15
 TOP_SELECTION = 4
 
