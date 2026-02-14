@@ -15,14 +15,16 @@ from datetime import datetime, timedelta
 
 TARGET_AUTHORS = [
     "Lorenz Meinel",
-    "Tessa Lühmann",
-    "Josef Kehrein",
-    "Robert Luxenhofer"
+    "Tessa Lühmann"
 ]
 
 DAYS_BACK = 7
 TOP_SELECTION_TOTAL = 10
 MAX_FEED_ITEMS = 20
+
+TARGET_DURATION_MINUTES = 30
+BASE_MINUTES_PER_PAPER = 5
+CITATION_WEIGHT_FACTOR = 0.04
 
 BASE_URL = "https://juppifluppi.github.io/researchpodcast"
 EPISODES_DIR = "episodes"
@@ -65,6 +67,19 @@ def apply_eq_author(audio):
     return low_pass_filter(high_pass_filter(audio, 80), 7000) - 1
 
 # =========================
+# PAPER EXTRACTION
+# =========================
+
+def extract_paper(item):
+    return {
+        "title": item.get("title", ["No title"])[0],
+        "summary": strip_html(item.get("abstract", "")),
+        "doi": item.get("DOI", ""),
+        "journal": item.get("container-title", ["Unknown Journal"])[0],
+        "citations": item.get("is-referenced-by-count", 0),
+    }
+
+# =========================
 # AUTHOR PROFILE
 # =========================
 
@@ -73,7 +88,12 @@ def build_author_profile():
     abstracts = []
 
     for author in TARGET_AUTHORS:
-        url = "https://api.crossref.org/works?query.author=" + author + "&rows=40"
+        url = (
+            "https://api.crossref.org/works?"
+            f"query.author={author}"
+            "&rows=40"
+        )
+
         response = requests.get(url)
         data = response.json()
 
@@ -84,32 +104,39 @@ def build_author_profile():
 
     combined = "\n".join(abstracts[:30])
 
+    if not combined:
+        return ""
+
     prompt = (
-        "Analyze these abstracts and summarize the core research themes, "
-        "technologies, applications, and scientific philosophy of the authors:\n\n"
-        + combined
+        "Summarize the core research themes, technologies, and application domains "
+        "represented in the following abstracts:\n\n" + combined
     )
 
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "You extract research identity profiles."},
+            {"role": "system", "content": "You extract scientific research identity profiles."},
             {"role": "user", "content": prompt}
         ],
         temperature=0.3,
-        max_tokens=800
+        max_tokens=600
     )
 
     return response.choices[0].message.content
 
 # =========================
-# FETCH RECENT PAPERS
+# FETCH + ALIGN PAPERS
 # =========================
 
-def fetch_recent_papers():
+def fetch_crossref():
 
     start_date = (datetime.utcnow() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
-    url = "https://api.crossref.org/works?filter=from-pub-date:" + start_date + "&rows=120"
+
+    url = (
+        "https://api.crossref.org/works?"
+        f"filter=from-pub-date:{start_date}"
+        "&rows=120"
+    )
 
     response = requests.get(url)
     data = response.json()
@@ -120,37 +147,38 @@ def fetch_recent_papers():
         abstract = strip_html(item.get("abstract", ""))
         if not abstract:
             continue
+        papers.append(extract_paper(item))
 
-        papers.append({
-            "title": item.get("title", ["No title"])[0],
-            "summary": abstract,
-            "doi": item.get("DOI", ""),
-            "journal": item.get("container-title", ["Unknown Journal"])[0],
-            "citations": item.get("is-referenced-by-count", 0),
-        })
+    unique = {}
+    for p in papers:
+        if p["doi"]:
+            unique[p["doi"]] = p
 
-    return papers
+    papers = list(unique.values())
 
-# =========================
-# ALIGNMENT RANKING
-# =========================
+    if not papers:
+        return []
 
-def rank_by_author_alignment(papers, author_profile):
+    author_profile = build_author_profile()
+
+    if not author_profile:
+        return papers[:TOP_SELECTION_TOTAL]
 
     text = ""
     for i, p in enumerate(papers):
         text += (
-            "\nPaper " + str(i+1) + "\n"
-            "Title: " + p["title"] + "\n"
-            "Abstract: " + p["summary"][:1200] + "\n"
+            f"\nPaper {i+1}\n"
+            f"Title: {p['title']}\n"
+            f"Abstract: {p['summary'][:1200]}\n"
         )
 
-    prompt = (
+    ranking_prompt = (
         "Given this research profile:\n\n"
         + author_profile +
         "\n\nSelect the "
         + str(TOP_SELECTION_TOTAL) +
-        " papers most aligned with this profile. "
+        " papers that are MOST scientifically aligned with it. "
+        "Prioritize conceptual proximity and methodological similarity. "
         "Return ONLY numbers separated by commas.\n\n"
         + text
     )
@@ -158,8 +186,8 @@ def rank_by_author_alignment(papers, author_profile):
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "You are an expert research evaluator."},
-            {"role": "user", "content": prompt}
+            {"role": "system", "content": "You are a strict research alignment evaluator."},
+            {"role": "user", "content": ranking_prompt}
         ],
         temperature=0.2,
         max_tokens=300
@@ -181,6 +209,13 @@ def rank_by_author_alignment(papers, author_profile):
 
 def generate_script(selected_papers):
 
+    number_of_papers = len(selected_papers)
+    base_duration = number_of_papers * BASE_MINUTES_PER_PAPER
+    desired_minutes = max(TARGET_DURATION_MINUTES, base_duration)
+
+    approx_tokens = int(desired_minutes * 180)
+    max_tokens = min(9000, approx_tokens)
+
     moderator_styles = [
         "analytical but slightly contrarian",
         "skeptical and probing",
@@ -198,38 +233,59 @@ def generate_script(selected_papers):
     moderator_style = random.choice(moderator_styles)
     author_style = random.choice(author_styles)
 
+    citation_info = ""
+    for p in selected_papers:
+        depth_multiplier = 1 + (p["citations"] * CITATION_WEIGHT_FACTOR)
+        citation_info += (
+            "\nPaper: " + p["title"] +
+            "\nCitations: " + str(p["citations"]) +
+            "\nDepth weight: " + str(round(depth_multiplier, 2)) + "x\n"
+        )
+
     section = ""
     for p in selected_papers:
         section += "\n### PAPER_START: " + p["title"] + "\n"
 
     prompt = (
-        "Create a dynamic scientific podcast dialogue.\n\n"
-        "Moderator is " + moderator_style + ".\n"
-        "Author is " + author_style + ".\n\n"
-        "Rules:\n"
+        "Create a highly dynamic scientific podcast dialogue.\n\n"
+        "PERSONALITY:\n"
+        "- Moderator is " + moderator_style + ".\n"
+        "- Author is " + author_style + ".\n\n"
+        "STRICT RULES:\n"
         "- Discuss ONLY the listed papers.\n"
-        "- No cross-paper commentary.\n"
-        "- No statistical deep dives.\n"
-        "- Avoid mentioning specific tests or p-values.\n\n"
-        "Include:\n"
-        "- Controlled disagreement moments\n"
-        "- Occasional analogies\n"
-        "- Subtle emotional nuance\n"
-        "- Probing questions from moderator\n\n"
+        "- NO cross-paper comparisons.\n"
+        "- NO general field commentary.\n"
+        "- NO statistical deep dives.\n"
+        "- Do not mention specific test names or p-values.\n\n"
+        "CONVERSATIONAL DYNAMICS:\n"
+        "- Moderator occasionally challenges assumptions.\n"
+        "- Include controlled disagreement moments.\n"
+        "- Allow subtle emotional nuance (skepticism, curiosity, surprise).\n"
+        "- Include occasional sophisticated analogies.\n"
+        "- Keep tone intelligent and realistic.\n\n"
+        "CONTENT FOCUS:\n"
+        "- Core innovation\n"
+        "- Mechanism\n"
+        "- Conceptual advance\n"
+        "- Why it matters\n"
+        "- Real-world implications\n"
+        "- High-level limitations\n\n"
+        "Target length: approx " + str(desired_minutes) + " minutes.\n\n"
+        "Depth weighting:\n" + citation_info + "\n\n"
         "Format strictly:\n\n"
         "### PAPER_START: <Title>\n\n"
-        "MODERATOR:\nText\n\n"
-        "AUTHOR:\nText\n"
+        "MODERATOR:\n<Text>\n\n"
+        "AUTHOR:\n<Text>\n"
     )
 
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Generate natural, nuanced scientific dialogue."},
+            {"role": "system", "content": "Generate natural, nuanced, intellectually rigorous dialogue."},
             {"role": "user", "content": prompt + section}
         ],
         temperature=0.9,
-        max_tokens=9000
+        max_tokens=max_tokens
     )
 
     return response.choices[0].message.content
@@ -245,7 +301,9 @@ def generate_episode_metadata(papers, episode_number):
         paper_list += "- " + p["title"] + " (" + p["journal"] + ") DOI: https://doi.org/" + p["doi"] + "\n"
 
     prompt = (
-        "Generate a short episode title (max 6 words) and a 3-4 sentence summary.\n\n"
+        "Generate:\n"
+        "1) A VERY SHORT episode title (max 6 words).\n"
+        "2) A concise 3–4 sentence summary.\n\n"
         "Papers:\n" + paper_list
     )
 
@@ -262,7 +320,7 @@ def generate_episode_metadata(papers, episode_number):
     text = response.choices[0].message.content.strip()
     lines = text.split("\n", 1)
 
-    raw_title = lines[0]
+    raw_title = lines[0].strip()
     raw_title = re.sub(r"^\s*\d+[\).\s-]*", "", raw_title)
     raw_title = re.sub(r"(?i)^episode\s*title\s*:\s*", "", raw_title)
     raw_title = raw_title.replace("*", "").strip()
@@ -280,19 +338,17 @@ def generate_episode_metadata(papers, episode_number):
         )
     show_notes += "</ul>"
 
+    full_description = "<p>" + summary + "</p>" + show_notes
     title = "Ep. " + str(episode_number).zfill(2) + " – " + raw_title
-    description = "<p>" + summary + "</p>" + show_notes
 
-    return title, description
+    return title, full_description
 
 # =========================
 # AUDIO
 # =========================
 
 def process_block(speaker, text):
-
     segments = []
-
     voice = "alloy" if "moderator" in speaker else "verse"
     pan = -0.08 if "moderator" in speaker else 0.08
     eq_func = apply_eq_moderator if "moderator" in speaker else apply_eq_author
@@ -304,7 +360,7 @@ def process_block(speaker, text):
         speech = client.audio.speech.create(
             model="gpt-4o-mini-tts",
             voice=voice,
-            input=chunk
+            input=chunk,
         )
 
         temp_path = os.path.join(EPISODES_DIR, "temp.mp3")
@@ -318,7 +374,6 @@ def process_block(speaker, text):
         segments.append(random_pause())
 
     return segments
-
 
 def generate_audio(script):
 
@@ -393,7 +448,6 @@ def update_rss(filename, duration_seconds, title, description, episode_number):
 
         image = ET.SubElement(channel, "itunes:image")
         image.set("href", cover_url)
-
     else:
         tree = ET.parse(feed_path)
         rss = tree.getroot()
@@ -424,21 +478,8 @@ def update_rss(filename, duration_seconds, title, description, episode_number):
 # =========================
 
 def main():
-
-    print("Building author research profile...")
-    author_profile = build_author_profile()
-
-    print("Fetching recent papers...")
-    recent_papers = fetch_recent_papers()
-
-    print("Ranking papers by alignment...")
-    selected_papers = rank_by_author_alignment(recent_papers, author_profile)
-
-    if not selected_papers:
-        print("No aligned papers found.")
-        return
-
-    script = generate_script(selected_papers)
+    papers = fetch_crossref()[:TOP_SELECTION_TOTAL]
+    script = generate_script(papers)
     filename, duration = generate_audio(script)
 
     if os.path.exists("feed.xml"):
@@ -448,11 +489,10 @@ def main():
     else:
         episode_number = 1
 
-    title, description = generate_episode_metadata(selected_papers, episode_number)
+    title, description = generate_episode_metadata(papers, episode_number)
     update_rss(filename, duration, title, description, episode_number)
 
     print("Episode generated:", title)
-
 
 if __name__ == "__main__":
     main()
