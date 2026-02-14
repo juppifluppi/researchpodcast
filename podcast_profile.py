@@ -1,37 +1,28 @@
 import os
 import requests
-import re
-import random
 import numpy as np
-import xml.etree.ElementTree as ET
+import random
 from openai import OpenAI
+from datetime import datetime, timedelta
 from pydub import AudioSegment
 from pydub.effects import compress_dynamic_range, high_pass_filter, low_pass_filter
-from datetime import datetime, timedelta
 
 # =========================
 # CONFIG
 # =========================
 
-# 🔒 Replace these with the REAL OpenAlex author IDs
 AUTHOR_IDS = [
-    "https://openalex.org/a5001051737",  # Lorenz Meinel
-    "https://openalex.org/a5000977163"   # Tessa Lühmann
-    "https://openalex.org/a5018917714"   # Josef Kehrein    
+    "https://openalex.org/A5001051737",  # Lorenz Meinel
+    "https://openalex.org/A5000977163",  # Tessa Lühmann
+    "https://openalex.org/A5018917714"   # Josef Kehrein
 ]
 
 DAYS_BACK = 7
 TARGET_DURATION_MINUTES = 30
 BASE_MINUTES_PER_PAPER = 5
 CITATION_WEIGHT_FACTOR = 0.04
-MAX_FEED_ITEMS = 20
 
-BASE_URL = "https://juppifluppi.github.io/researchpodcast"
 EPISODES_DIR = "episodes"
-
-PODCAST_TITLE = "Research Updates"
-PODCAST_DESCRIPTION = "AI-generated deep dive into recent scientific publications."
-PODCAST_LANGUAGE = "en-us"
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -56,7 +47,7 @@ def apply_eq_author(audio):
     return low_pass_filter(high_pass_filter(audio, 80), 7000) - 1
 
 # =========================
-# EMBEDDINGS
+# EMBEDDING
 # =========================
 
 def get_embedding(text):
@@ -105,13 +96,16 @@ def extract_author_concepts():
                 score = concept.get("score", 0)
                 concept_counter[cid] = concept_counter.get(cid, 0) + score
 
+    if not concept_counter:
+        return []
+
     sorted_concepts = sorted(concept_counter.items(), key=lambda x: x[1], reverse=True)
 
-    # Use top 3 specific subfield concepts
+    # top 3 dominant subfield concepts
     return [cid for cid, _ in sorted_concepts[:3]]
 
 # =========================
-# FETCH AND RANK PAPERS
+# FETCH & RANK PAPERS
 # =========================
 
 def fetch_papers():
@@ -124,17 +118,18 @@ def fetch_papers():
         print("No dominant concepts found.")
         return []
 
-    concept_filter = "|".join([f"concepts.id:{cid}" for cid in concept_ids])
+    # Correct OR syntax for OpenAlex
+    concept_filter = "|".join(concept_ids)
 
     query = (
         "https://api.openalex.org/works?"
-        f"filter=from_publication_date:{start_date},{concept_filter}"
+        f"filter=from_publication_date:{start_date},concepts.id:{concept_filter}"
         "&per_page=150"
     )
 
     recent = requests.get(query).json()
 
-    # Build author embedding centroid
+    # Build centroid from author abstracts
     author_abstracts = []
 
     for author_id in AUTHOR_IDS:
@@ -160,6 +155,7 @@ def fetch_papers():
     candidates = []
 
     for work in recent.get("results", []):
+
         if not work.get("abstract_inverted_index"):
             continue
 
@@ -185,6 +181,7 @@ def fetch_papers():
             "journal": journal,
             "doi": doi,
             "citations": citations,
+            "similarity": similarity,
             "score": score
         })
 
@@ -307,7 +304,7 @@ def main():
         print("No aligned papers found.")
         return
 
-    # Dynamic number of papers
+    # dynamic paper count
     num_papers = max(3, min(8, TARGET_DURATION_MINUTES // BASE_MINUTES_PER_PAPER))
     selected = ranked[:num_papers]
 
