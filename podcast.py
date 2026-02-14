@@ -10,7 +10,7 @@ from email.message import EmailMessage
 # CONFIG
 # =========================
 
-TOPIC = "YOUR_TOPIC_HERE"
+TOPIC = "Lipid nanoparticles"
 MAX_PAPERS = 15
 TOP_SELECTION = 5
 
