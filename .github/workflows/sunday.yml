@@ -1,4 +1,4 @@
-name: Weekly Research Podcast
+name: researchpodcast
 
 on:
   schedule:
@@ -22,7 +22,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run Script
-        run: python weekly_podcast.py
+        run: python podcast.py
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           POSTEO_PASS: ${{ secrets.POSTEO_PASS }}
