@@ -1,7 +1,6 @@
 import os
 import requests
 import re
-import json
 import html
 from openai import OpenAI
 from pydub import AudioSegment
@@ -12,14 +11,20 @@ import xml.etree.ElementTree as ET
 # CONFIG
 # =========================
 
-TOPICS = ["lipid nanoparticle", "bioconjugation"]  # Customize
+TOPICS = ["TOPIC_ONE", "TOPIC_TWO"]  # Customize
 DAYS_BACK = 14
 MAX_PAPERS_PER_TOPIC = 12
 TOP_SELECTION_TOTAL = 6
 MAX_FEED_ITEMS = 20
 
-SITE_URL = "https://juppifluppi.github.io"
+BASE_URL = "https://juppifluppi.github.io/researchpodcast"
 EPISODES_DIR = "episodes"
+
+PODCAST_TITLE = "Research Intelligence Briefing"
+PODCAST_AUTHOR = "Research Intelligence System"
+PODCAST_DESCRIPTION = "Automated deep-dive analysis of recent academic publications."
+PODCAST_LANGUAGE = "de-de"
+PODCAST_CATEGORY = "Science"
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -157,16 +162,13 @@ Keine Einleitungen.
 Keine Musik-Erwähnung.
 Keine Vereinfachungen.
 
-Jedes Paper MUSS mit der Marker-Zeile beginnen:
-### PAPER_START: <Original Title>
-
 Diskutiere:
 - Theoretischer Rahmen
-- Relevante Methodik
+- Methodische Besonderheiten
 - Zentrale Ergebnisse
 - Limitationen
 - Forschungsimplikationen
-- Emergende Trends übergreifend
+- Übergreifende emergente Trends
 """
 
     response = client.chat.completions.create(
@@ -182,7 +184,7 @@ Diskutiere:
     return response.choices[0].message.content
 
 # =========================
-# CHUNKED TTS (FIXES 2000 TOKEN LIMIT)
+# CHUNKED TTS
 # =========================
 
 def generate_audio(script):
@@ -190,7 +192,6 @@ def generate_audio(script):
     filename = f"episode_{datetime.utcnow().strftime('%Y%m%d')}.mp3"
     final_path = os.path.join(EPISODES_DIR, filename)
 
-    # Split into safe chunks
     max_words_per_chunk = 900
     words = script.split()
     chunks = [
@@ -217,7 +218,6 @@ def generate_audio(script):
     spoken = sum(audio_segments)
 
     intro = AudioSegment.from_mp3("intro_music.mp3")
-
     spoken = speed_up(normalize(spoken))
     intro = normalize(intro - 5)
 
@@ -229,20 +229,32 @@ def generate_audio(script):
     return filename
 
 # =========================
-# RSS UPDATE (SAFE XML)
+# RSS UPDATE
 # =========================
 
 def update_rss(filename):
     feed_path = "feed.xml"
-    episode_url = f"{SITE_URL}/episodes/{filename}"
+    episode_url = f"{BASE_URL}/episodes/{filename}"
+    cover_url = f"{BASE_URL}/cover.jpg"
     pub_date = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
 
     rss = ET.Element("rss", version="2.0")
+    rss.set("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
+
     channel = ET.SubElement(rss, "channel")
 
-    ET.SubElement(channel, "title").text = "Private Research Podcast"
-    ET.SubElement(channel, "link").text = SITE_URL
-    ET.SubElement(channel, "description").text = "Automated Research Monitoring"
+    ET.SubElement(channel, "title").text = PODCAST_TITLE
+    ET.SubElement(channel, "link").text = BASE_URL
+    ET.SubElement(channel, "description").text = PODCAST_DESCRIPTION
+    ET.SubElement(channel, "language").text = PODCAST_LANGUAGE
+    ET.SubElement(channel, "itunes:author").text = PODCAST_AUTHOR
+    ET.SubElement(channel, "itunes:explicit").text = "no"
+
+    image = ET.SubElement(channel, "itunes:image")
+    image.set("href", cover_url)
+
+    category = ET.SubElement(channel, "itunes:category")
+    category.set("text", PODCAST_CATEGORY)
 
     old_items = []
     if os.path.exists(feed_path):
@@ -250,9 +262,13 @@ def update_rss(filename):
         old_channel = tree.getroot().find("channel")
         old_items = old_channel.findall("item")
 
+    episode_title = f"Research Briefing – {datetime.utcnow().strftime('%d %B %Y')}"
+
     item = ET.SubElement(channel, "item")
-    ET.SubElement(item, "title").text = f"Research Update {filename}"
+    ET.SubElement(item, "title").text = episode_title
+    ET.SubElement(item, "description").text = "Deep analytical review of the most relevant publications of the past 14 days."
     ET.SubElement(item, "pubDate").text = pub_date
+    ET.SubElement(item, "guid").text = episode_url
 
     enclosure = ET.SubElement(item, "enclosure")
     enclosure.set("url", episode_url)
