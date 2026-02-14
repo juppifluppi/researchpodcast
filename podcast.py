@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 # CONFIG
 # =========================
 
-TOPICS = ["TOPIC_ONE", "TOPIC_TWO"]  # Customize
+TOPICS = ["lipid nanoparticle", "bioconjugation"]  # Customize
 DAYS_BACK = 14
 MAX_PAPERS_PER_TOPIC = 12
 TOP_SELECTION_TOTAL = 6
