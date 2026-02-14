@@ -2,6 +2,7 @@ import os
 import requests
 import re
 import html
+import json
 from openai import OpenAI
 from pydub import AudioSegment
 from datetime import datetime, timedelta
@@ -11,7 +12,7 @@ import xml.etree.ElementTree as ET
 # CONFIG
 # =========================
 
-TOPICS = ["lipid nanoparticle", "bioconjugation"]  # Customize
+TOPICS = ["lipid nanoparticle", "bioconjugation"]
 DAYS_BACK = 14
 MAX_PAPERS_PER_TOPIC = 12
 TOP_SELECTION_TOTAL = 6
@@ -20,9 +21,9 @@ MAX_FEED_ITEMS = 20
 BASE_URL = "https://juppifluppi.github.io/researchpodcast"
 EPISODES_DIR = "episodes"
 
-PODCAST_TITLE = "Jupps Paper Update"
+PODCAST_TITLE = "Research Updates"
 PODCAST_AUTHOR = "Jupp"
-PODCAST_DESCRIPTION = "Automated deep-dive analysis of recent academic publications."
+PODCAST_DESCRIPTION = "AI deep-dive into recent publications."
 PODCAST_LANGUAGE = "de-de"
 PODCAST_CATEGORY = "Science"
 
@@ -36,8 +37,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 def strip_html(text):
     if not text:
         return ""
-    clean = re.sub("<.*?>", "", text)
-    return html.unescape(clean)
+    return html.unescape(re.sub("<.*?>", "", text))
 
 def normalize(audio):
     return audio.apply_gain(-20.0 - audio.dBFS)
@@ -49,7 +49,7 @@ def speed_up(audio, speed=1.18):
     ).set_frame_rate(audio.frame_rate)
 
 # =========================
-# FETCH FROM CROSSREF
+# FETCH PAPERS
 # =========================
 
 def fetch_crossref():
@@ -70,21 +70,13 @@ def fetch_crossref():
         data = response.json()
 
         for item in data.get("message", {}).get("items", []):
-            title = item.get("title", ["No title"])[0]
-            abstract = strip_html(item.get("abstract", ""))
-            doi = item.get("DOI", "")
-            journal = item.get("container-title", ["Unknown Journal"])[0]
-            citations = item.get("is-referenced-by-count", 0)
-            link = f"https://doi.org/{doi}" if doi else ""
-
             papers.append({
                 "topic": topic,
-                "title": title,
-                "summary": abstract,
-                "doi": doi,
-                "journal": journal,
-                "citations": citations,
-                "link": link
+                "title": item.get("title", ["No title"])[0],
+                "summary": strip_html(item.get("abstract", "")),
+                "doi": item.get("DOI", ""),
+                "journal": item.get("container-title", ["Unknown Journal"])[0],
+                "citations": item.get("is-referenced-by-count", 0),
             })
 
     return papers
@@ -98,7 +90,6 @@ def rank_papers(papers):
     for i, p in enumerate(papers):
         text += f"""
 Paper {i+1}
-Topic: {p['topic']}
 Title: {p['title']}
 Journal: {p['journal']}
 Citations: {p['citations']}
@@ -108,13 +99,7 @@ Abstract: {p['summary']}
     prompt = f"""
 Select the {TOP_SELECTION_TOTAL} most important papers.
 Return ONLY numbers separated by commas.
-
-Prioritize:
-- theoretical contribution
-- methodological innovation
-- conceptual novelty
-- forward-looking implications
-- citation count as signal
+Consider theoretical impact, novelty, forward implications, and citations.
 """
 
     response = client.chat.completions.create(
@@ -129,52 +114,40 @@ Prioritize:
     numbers = re.findall(r"\d+", response.choices[0].message.content)
     indices = [int(n) - 1 for n in numbers]
 
-    selected = []
-    for i in indices:
-        if 0 <= i < len(papers):
-            selected.append(papers[i])
-
-    return selected[:TOP_SELECTION_TOTAL]
+    return [papers[i] for i in indices if 0 <= i < len(papers)][:TOP_SELECTION_TOTAL]
 
 # =========================
-# GENERATE SCRIPT (~6000 WORDS)
+# SCRIPT GENERATION (~6000 WORDS)
 # =========================
 
 def generate_script(selected_papers):
     section = ""
     for p in selected_papers:
-        section += f"""
-### PAPER_START: {p['title']}
-
-Topic: {p['topic']}
-Journal: {p['journal']}
-Citations: {p['citations']}
-Abstract: {p['summary']}
-DOI: {p['doi']}
-"""
+        section += f"\n### PAPER_START: {p['title']}\n"
 
     prompt = f"""
 Erstelle ein ca. 6000 Wörter langes technisches Forschungspodcast-Skript.
 
 Sprache: Deutsch.
-Zielgruppe: Forschende.
 Keine Einleitungen.
 Keine Musik-Erwähnung.
-Keine Vereinfachungen.
+
+Jedes Paper beginnt exakt mit:
+### PAPER_START: <Title>
 
 Diskutiere:
-- Theoretischer Rahmen
-- Methodische Besonderheiten
-- Zentrale Ergebnisse
+- Theorie
+- Methodik
+- Ergebnisse
 - Limitationen
-- Forschungsimplikationen
-- Übergreifende emergente Trends
+- Implikationen
+- Übergreifende Trends
 """
 
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Du bist ein präziser wissenschaftlicher Analyst."},
+            {"role": "system", "content": "Du bist ein wissenschaftlicher Analyst."},
             {"role": "user", "content": prompt + section}
         ],
         temperature=0.4,
@@ -184,7 +157,26 @@ Diskutiere:
     return response.choices[0].message.content
 
 # =========================
-# CHUNKED TTS
+# SUMMARY
+# =========================
+
+def generate_summary(script):
+    prompt = "Erstelle eine prägnante wissenschaftliche Zusammenfassung (5–7 Sätze)."
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": "Du bist wissenschaftlicher Redakteur."},
+            {"role": "user", "content": prompt + script[:3000]}
+        ],
+        temperature=0.3,
+        max_tokens=400
+    )
+
+    return response.choices[0].message.content
+
+# =========================
+# AUDIO GENERATION (CHUNKED)
 # =========================
 
 def generate_audio(script):
@@ -192,57 +184,77 @@ def generate_audio(script):
     filename = f"episode_{datetime.utcnow().strftime('%Y%m%d')}.mp3"
     final_path = os.path.join(EPISODES_DIR, filename)
 
-    max_words_per_chunk = 900
     words = script.split()
-    chunks = [
-        " ".join(words[i:i + max_words_per_chunk])
-        for i in range(0, len(words), max_words_per_chunk)
-    ]
+    chunks = [" ".join(words[i:i+900]) for i in range(0, len(words), 900)]
 
-    audio_segments = []
-
+    segments = []
     for chunk in chunks:
         speech = client.audio.speech.create(
             model="gpt-4o-mini-tts",
             voice="alloy",
             input=chunk,
         )
-
-        temp_path = os.path.join(EPISODES_DIR, "temp_chunk.mp3")
-        with open(temp_path, "wb") as f:
+        temp = os.path.join(EPISODES_DIR, "temp.mp3")
+        with open(temp, "wb") as f:
             f.write(speech.content)
+        segments.append(AudioSegment.from_mp3(temp))
 
-        segment = AudioSegment.from_mp3(temp_path)
-        audio_segments.append(segment)
-
-    spoken = sum(audio_segments)
-
+    spoken = sum(segments)
     intro = AudioSegment.from_mp3("intro_music.mp3")
+
     spoken = speed_up(normalize(spoken))
     intro = normalize(intro - 5)
 
     combined = intro.fade_out(1500) + spoken + intro.fade_in(1500)
     combined = normalize(combined)
-
     combined.export(final_path, format="mp3")
 
-    return filename
+    duration_seconds = int(len(combined) / 1000)
+    return filename, duration_seconds
+
+# =========================
+# CHAPTER MARKERS
+# =========================
+
+def generate_chapters(script, filename):
+    matches = list(re.finditer(r"### PAPER_START: (.+)", script))
+    words = script.split()
+    total_words = len(words)
+    words_per_minute = 177
+    total_seconds = (total_words / words_per_minute) * 60
+
+    chapters = []
+    for match in matches:
+        title = match.group(1)
+        start_words = len(script[:match.start()].split())
+        start_seconds = int((start_words / total_words) * total_seconds)
+        chapters.append({"startTime": start_seconds, "title": title})
+
+    chapter_file = filename.replace(".mp3", ".json")
+    chapter_path = os.path.join(EPISODES_DIR, chapter_file)
+
+    with open(chapter_path, "w") as f:
+        json.dump({"version": "1.2.0", "chapters": chapters}, f, indent=2)
+
+    return chapter_file
 
 # =========================
 # RSS UPDATE
 # =========================
 
-def update_rss(filename):
+def update_rss(filename, duration_seconds, summary, chapter_file):
     feed_path = "feed.xml"
     episode_url = f"{BASE_URL}/episodes/{filename}"
+    chapter_url = f"{BASE_URL}/episodes/{chapter_file}"
     cover_url = f"{BASE_URL}/cover.png"
+
     pub_date = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
 
     rss = ET.Element("rss", version="2.0")
     rss.set("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
+    rss.set("xmlns:podcast", "https://podcastindex.org/namespace/1.0")
 
     channel = ET.SubElement(rss, "channel")
-
     ET.SubElement(channel, "title").text = PODCAST_TITLE
     ET.SubElement(channel, "link").text = BASE_URL
     ET.SubElement(channel, "description").text = PODCAST_DESCRIPTION
@@ -252,21 +264,22 @@ def update_rss(filename):
 
     image = ET.SubElement(channel, "itunes:image")
     image.set("href", cover_url)
+    ET.SubElement(channel, "itunes:category").set("text", PODCAST_CATEGORY)
 
-    category = ET.SubElement(channel, "itunes:category")
-    category.set("text", PODCAST_CATEGORY)
-
-    old_items = []
+    episode_number = 1
     if os.path.exists(feed_path):
         tree = ET.parse(feed_path)
         old_channel = tree.getroot().find("channel")
-        old_items = old_channel.findall("item")
-
-    episode_title = f"Research Briefing – {datetime.utcnow().strftime('%d %B %Y')}"
+        items = old_channel.findall("item")
+        episode_number = len(items) + 1
+        for old in items[:MAX_FEED_ITEMS - 1]:
+            channel.append(old)
 
     item = ET.SubElement(channel, "item")
-    ET.SubElement(item, "title").text = episode_title
-    ET.SubElement(item, "description").text = "Deep analytical review of the most relevant publications of the past 14 days."
+    ET.SubElement(item, "title").text = f"Episode {episode_number}"
+    ET.SubElement(item, "description").text = summary
+    ET.SubElement(item, "itunes:duration").text = str(duration_seconds)
+    ET.SubElement(item, "itunes:episode").text = str(episode_number)
     ET.SubElement(item, "pubDate").text = pub_date
     ET.SubElement(item, "guid").text = episode_url
 
@@ -274,11 +287,9 @@ def update_rss(filename):
     enclosure.set("url", episode_url)
     enclosure.set("type", "audio/mpeg")
 
-    for old in old_items[:MAX_FEED_ITEMS - 1]:
-        channel.append(old)
+    ET.SubElement(item, "podcast:chapters").set("url", chapter_url)
 
-    tree = ET.ElementTree(rss)
-    tree.write(feed_path, encoding="utf-8", xml_declaration=True)
+    ET.ElementTree(rss).write(feed_path, encoding="utf-8", xml_declaration=True)
 
 # =========================
 # MAIN
@@ -286,14 +297,12 @@ def update_rss(filename):
 
 def main():
     papers = fetch_crossref()
-    if not papers:
-        print("No papers found.")
-        return
-
     ranked = rank_papers(papers)
     script = generate_script(ranked)
-    filename = generate_audio(script)
-    update_rss(filename)
+    summary = generate_summary(script)
+    filename, duration = generate_audio(script)
+    chapter_file = generate_chapters(script, filename)
+    update_rss(filename, duration, summary, chapter_file)
 
 if __name__ == "__main__":
     main()
