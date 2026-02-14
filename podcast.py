@@ -42,7 +42,7 @@ def strip_html(text):
 def normalize(audio):
     return audio.apply_gain(-20.0 - audio.dBFS)
 
-def speed_up(audio, speed=1.18):
+def speed_adjust(audio, speed=1.05):  # slightly slower
     return audio._spawn(
         audio.raw_data,
         overrides={"frame_rate": int(audio.frame_rate * speed)}
@@ -117,7 +117,7 @@ Consider theoretical impact, novelty, forward implications, and citations.
     return [papers[i] for i in indices if 0 <= i < len(papers)][:TOP_SELECTION_TOTAL]
 
 # =========================
-# SCRIPT GENERATION (~6000 WORDS)
+# SCRIPT GENERATION (DIALOGUE)
 # =========================
 
 def generate_script(selected_papers):
@@ -126,31 +126,39 @@ def generate_script(selected_papers):
         section += f"\n### PAPER_START: {p['title']}\n"
 
     prompt = f"""
-Erstelle ein ca. 6000 Wörter langes technisches Forschungspodcast-Skript.
+Erstelle ein ca. 6000 Wörter langes wissenschaftliches Podcastgespräch im Dialogformat.
 
 Sprache: Deutsch.
-Keine Einleitungen.
+Natürlich klingend.
+Kein Stichpunktstil.
+Keine Listen.
+Kein monotones Erklären.
 Keine Musik-Erwähnung.
+
+Format exakt:
+
+MODERATOR:
+<Text>
+
+AUTOR:
+<Text>
+
+Der Moderator stellt analytische, neugierige Fragen.
+Der Autor antwortet tiefgehend, reflektiert und in natürlicher Sprache.
 
 Jedes Paper beginnt exakt mit:
 ### PAPER_START: <Title>
 
-Diskutiere:
-- Theorie
-- Methodik
-- Ergebnisse
-- Limitationen
-- Implikationen
-- Übergreifende Trends
+Zwischen Papers keine Floskeln.
 """
 
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Du bist ein wissenschaftlicher Analyst."},
+            {"role": "system", "content": "Du erzeugst ein natürlich klingendes wissenschaftliches Gespräch."},
             {"role": "user", "content": prompt + section}
         ],
-        temperature=0.4,
+        temperature=0.65,
         max_tokens=8500
     )
 
@@ -176,7 +184,7 @@ def generate_summary(script):
     return response.choices[0].message.content
 
 # =========================
-# AUDIO GENERATION (CHUNKED)
+# AUDIO GENERATION (DUAL VOICE + PAUSES)
 # =========================
 
 def generate_audio(script):
@@ -184,26 +192,54 @@ def generate_audio(script):
     filename = f"episode_{datetime.utcnow().strftime('%Y%m%d')}.mp3"
     final_path = os.path.join(EPISODES_DIR, filename)
 
-    words = script.split()
-    chunks = [" ".join(words[i:i+900]) for i in range(0, len(words), 900)]
+    lines = script.split("\n")
 
     segments = []
-    for chunk in chunks:
-        speech = client.audio.speech.create(
-            model="gpt-4o-mini-tts",
-            voice="alloy",
-            input=chunk,
-        )
-        temp = os.path.join(EPISODES_DIR, "temp.mp3")
-        with open(temp, "wb") as f:
-            f.write(speech.content)
-        segments.append(AudioSegment.from_mp3(temp))
+    silence_between_papers = AudioSegment.silent(duration=2000)
+    silence_between_speakers = AudioSegment.silent(duration=400)
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        if line.startswith("### PAPER_START"):
+            segments.append(silence_between_papers)
+            continue
+
+        if line.startswith("MODERATOR:"):
+            text = line.replace("MODERATOR:", "").strip()
+            voice = "alloy"
+        elif line.startswith("AUTOR:"):
+            text = line.replace("AUTOR:", "").strip()
+            voice = "verse"
+        else:
+            continue
+
+        words = text.split()
+        chunks = [" ".join(words[i:i+700]) for i in range(0, len(words), 700)]
+
+        for chunk in chunks:
+            speech = client.audio.speech.create(
+                model="gpt-4o-mini-tts",
+                voice=voice,
+                input=chunk,
+            )
+
+            temp_path = os.path.join(EPISODES_DIR, "temp.mp3")
+            with open(temp_path, "wb") as f:
+                f.write(speech.content)
+
+            segment = AudioSegment.from_mp3(temp_path)
+            segments.append(segment)
+            segments.append(silence_between_speakers)
 
     spoken = sum(segments)
-    intro = AudioSegment.from_mp3("intro_music.mp3")
 
-    spoken = speed_up(normalize(spoken))
+    intro = AudioSegment.from_mp3("intro_music.mp3")
     intro = normalize(intro - 5)
+
+    spoken = speed_adjust(normalize(spoken))
 
     combined = intro.fade_out(1500) + spoken + intro.fade_in(1500)
     combined = normalize(combined)
@@ -220,7 +256,7 @@ def generate_chapters(script, filename):
     matches = list(re.finditer(r"### PAPER_START: (.+)", script))
     words = script.split()
     total_words = len(words)
-    words_per_minute = 177
+    words_per_minute = 165
     total_seconds = (total_words / words_per_minute) * 60
 
     chapters = []
@@ -239,16 +275,27 @@ def generate_chapters(script, filename):
     return chapter_file
 
 # =========================
-# RSS UPDATE
+# RSS UPDATE (WITH PAPER LINKS)
 # =========================
 
-def update_rss(filename, duration_seconds, summary, chapter_file):
+def update_rss(filename, duration_seconds, summary, chapter_file, selected_papers):
     feed_path = "feed.xml"
     episode_url = f"{BASE_URL}/episodes/{filename}"
     chapter_url = f"{BASE_URL}/episodes/{chapter_file}"
     cover_url = f"{BASE_URL}/cover.png"
 
     pub_date = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
+
+    papers_text = "\n\n---\n\n<b>Discussed Papers:</b>\n\n"
+    for i, p in enumerate(selected_papers, 1):
+        doi_link = f"https://doi.org/{p['doi']}" if p['doi'] else "No DOI available"
+        papers_text += (
+            f"{i}. <b>{p['title']}</b><br>"
+            f"<i>{p['journal']}</i><br>"
+            f"{doi_link}<br><br>"
+        )
+
+    full_description = summary + papers_text
 
     rss = ET.Element("rss", version="2.0")
     rss.set("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd")
@@ -277,7 +324,7 @@ def update_rss(filename, duration_seconds, summary, chapter_file):
 
     item = ET.SubElement(channel, "item")
     ET.SubElement(item, "title").text = f"Episode {episode_number}"
-    ET.SubElement(item, "description").text = summary
+    ET.SubElement(item, "description").text = full_description
     ET.SubElement(item, "itunes:duration").text = str(duration_seconds)
     ET.SubElement(item, "itunes:episode").text = str(episode_number)
     ET.SubElement(item, "pubDate").text = pub_date
@@ -302,7 +349,7 @@ def main():
     summary = generate_summary(script)
     filename, duration = generate_audio(script)
     chapter_file = generate_chapters(script, filename)
-    update_rss(filename, duration, summary, chapter_file)
+    update_rss(filename, duration, summary, chapter_file, ranked)
 
 if __name__ == "__main__":
     main()
