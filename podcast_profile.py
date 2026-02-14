@@ -12,7 +12,13 @@ from pydub.effects import compress_dynamic_range, high_pass_filter, low_pass_fil
 # =========================
 
 AUTHOR_IDS = [
-    "https://openalex.org/A5018917714"
+    "https://openalex.org/A5018917714",
+    "https://openalex.org/A5001051737",
+    "https://openalex.org/A5000977163",
+    "https://openalex.org/A5025070309",
+    "https://openalex.org/A5071908671",
+    "https://openalex.org/A5021321425",
+    "https://openalex.org/A5029642668"
 ]
 
 DAYS_BACK = 7
