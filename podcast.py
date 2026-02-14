@@ -164,12 +164,9 @@ Erstelle ein ca. 6000 Wörter langes wissenschaftliches Podcastgespräch im Dial
 
 Sprache: Deutsch.
 Natürlich klingend.
-Keine Listen.
+Moderator-Persönlichkeit: {moderator_personality}
 
-Moderator-Persönlichkeit:
-{moderator_personality}
-
-Format exakt:
+Format:
 
 MODERATOR:
 <Text>
@@ -178,12 +175,10 @@ AUTOR:
 <Text>
 
 Erlaubt:
-- gelegentliche Mikro-Hesitationen ("hm,", "also,")
+- Mikro-Hesitationen
 - gelegentliche Unterbrechungen
 - leichte Spannung
-
-Am Ende jedes Papers:
-MODERATOR fasst kritisch zusammen.
+- am Ende jedes Papers kritische Zusammenfassung
 
 Jedes Paper beginnt exakt mit:
 ### PAPER_START: <Title>
@@ -202,21 +197,47 @@ Jedes Paper beginnt exakt mit:
     return response.choices[0].message.content
 
 # =========================
-# SUMMARY
+# AUDIO BLOCK PROCESSING
 # =========================
 
-def generate_summary(script):
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": "Du bist wissenschaftlicher Redakteur."},
-            {"role": "user", "content": "Erstelle eine prägnante wissenschaftliche Zusammenfassung (5–7 Sätze).\n" + script[:3000]}
-        ],
-        temperature=0.3,
-        max_tokens=400
-    )
+def process_block(speaker, text):
+    segments = []
 
-    return response.choices[0].message.content
+    if not text.strip():
+        return segments
+
+    if "moderator" in speaker:
+        voice = "alloy"
+        pan = -0.12
+        eq_func = apply_eq_moderator
+    else:
+        voice = "verse"
+        pan = 0.12
+        eq_func = apply_eq_author
+
+    words = text.split()
+    chunks = [" ".join(words[i:i+650]) for i in range(0, len(words), 650)]
+
+    for chunk in chunks:
+        speech = client.audio.speech.create(
+            model="gpt-4o-mini-tts",
+            voice=voice,
+            input=chunk,
+        )
+
+        temp_path = os.path.join(EPISODES_DIR, "temp.mp3")
+        with open(temp_path, "wb") as f:
+            f.write(speech.content)
+
+        segment = AudioSegment.from_mp3(temp_path)
+        segment = eq_func(segment)
+        segment = segment.pan(pan)
+        segment = add_subtle_reverb(segment)
+
+        segments.append(segment)
+        segments.append(random_pause())
+
+    return segments
 
 # =========================
 # AUDIO GENERATION
@@ -227,73 +248,50 @@ def generate_audio(script):
     filename = f"episode_{datetime.utcnow().strftime('%Y%m%d')}.mp3"
     final_path = os.path.join(EPISODES_DIR, filename)
 
-    lines = script.split("\n")
     segments = []
+    current_speaker = None
+    buffer = ""
+
+    lines = script.split("\n")
 
     for line in lines:
         line = line.strip()
-        if not line:
-            continue
 
         if line.startswith("### PAPER_START"):
+            if buffer:
+                segments.extend(process_block(current_speaker, buffer))
+                buffer = ""
             segments.append(random_long_pause())
             continue
 
-        # Robust speaker parsing
-        speaker_match = re.match(r"^(MODERATOR|Moderator|AUTOR|Autor)\s*[:\-]\s*(.*)", line)
+        speaker_match = re.match(r"^(MODERATOR|Moderator|AUTOR|Autor)\s*[:\-]?$", line)
 
         if speaker_match:
-            speaker = speaker_match.group(1).lower()
-            text = speaker_match.group(2).strip()
-
-            if "moderator" in speaker:
-                voice = "alloy"
-                pan = -0.12
-                eq_func = apply_eq_moderator
-            else:
-                voice = "verse"
-                pan = 0.12
-                eq_func = apply_eq_author
-        else:
+            if buffer:
+                segments.extend(process_block(current_speaker, buffer))
+                buffer = ""
+            current_speaker = speaker_match.group(1).lower()
             continue
 
-        words = text.split()
-        chunks = [" ".join(words[i:i+650]) for i in range(0, len(words), 650)]
+        if current_speaker:
+            buffer += " " + line
 
-        for chunk in chunks:
-            speech = client.audio.speech.create(
-                model="gpt-4o-mini-tts",
-                voice=voice,
-                input=chunk,
-            )
-
-            temp_path = os.path.join(EPISODES_DIR, "temp.mp3")
-            with open(temp_path, "wb") as f:
-                f.write(speech.content)
-
-            segment = AudioSegment.from_mp3(temp_path)
-            segment = eq_func(segment)
-            segment = segment.pan(pan)
-            segment = add_subtle_reverb(segment)
-
-            segments.append(segment)
-            segments.append(random_pause())
+    if buffer:
+        segments.extend(process_block(current_speaker, buffer))
 
     spoken = sum(segments)
 
     if len(spoken) < 5000:
-        raise ValueError("No speech segments were generated. Check script formatting.")
+        raise ValueError("No speech generated. Dialogue parsing failed.")
 
     spoken = speed_adjust(normalize(spoken), speed=1.02)
 
-    # Optional room tone
     if os.path.exists("room_tone.mp3"):
         room = AudioSegment.from_mp3("room_tone.mp3") - 32
         if len(room) < len(spoken):
             loops = len(spoken) // len(room) + 1
             room = room * loops
-        room = room[:len(spoken)]
-        spoken = spoken.overlay(room)
+        spoken = spoken.overlay(room[:len(spoken)])
 
     spoken = compress_dynamic_range(
         spoken,
@@ -322,7 +320,6 @@ def main():
     papers = fetch_crossref()
     ranked = rank_papers(papers)
     script = generate_script(ranked)
-    summary = generate_summary(script)
     filename, duration = generate_audio(script)
     print("Episode generated:", filename, "Duration:", duration)
 
